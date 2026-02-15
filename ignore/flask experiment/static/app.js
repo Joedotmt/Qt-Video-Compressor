@@ -56,6 +56,7 @@ dropZone.addEventListener('drop', (e) => {
 });
 
 fileInput.addEventListener('change', (e) => {
+    console.log(e.target.value)
     if (e.target.files.length > 0) {
         handleFileSelect(e.target.files[0]);
     }
@@ -96,6 +97,9 @@ async function handleFileSelect(file) {
         
         // Update UI
         displayFileInfo();
+        
+        downloadSection.classList.remove('visible');
+
         compressBtn.disabled = false;
         
         // Auto-fill form fields
@@ -118,7 +122,6 @@ function displayFileInfo() {
     
     fileInfo.classList.add('visible');
     dropZone.innerHTML = `
-        <div class="drop-icon">✓</div>
         <div class="drop-text">${info.filename}</div>
         <div class="drop-subtext">Click to change file</div>
     `;
@@ -126,8 +129,7 @@ function displayFileInfo() {
 
 function resetDropZone() {
     dropZone.innerHTML = `
-        <div class="drop-icon">📹</div>
-        <div class="drop-text">Drag & Drop Video File</div>
+        <div class="drop-text">Drag & Drop Video</div>
         <div class="drop-subtext">or click to browse</div>
     `;
 }
@@ -246,15 +248,14 @@ async function startCompression() {
     const height = document.getElementById('height').value;
     const fps = document.getElementById('fps').value;
     const targetSize = document.getElementById('targetSize').value;
-    const crf = document.getElementById('crf').value;
     
     if (!width || !height || !fps) {
         showError('Please fill in width, height, and FPS');
         return;
     }
     
-    if (!crf && !targetSize) {
-        showError('Please enter either a target size or CRF value');
+    if (!targetSize) {
+        showError('Please enter either a target size');
         return;
     }
     
@@ -269,7 +270,6 @@ async function startCompression() {
         mute_audio: document.getElementById('muteAudio').checked,
         audio_bitrate: document.getElementById('audioBitrate').value || videoInfo.audio_bitrate,
         duration: videoInfo.duration,
-        crf: crf || null,
         tune: document.getElementById('tune').value
     };
     
@@ -293,7 +293,6 @@ async function startCompression() {
         
         // Show progress
         compressBtn.disabled = true;
-        progressContainer.classList.add('visible');
         downloadSection.classList.remove('visible');
         
         // Poll for status
@@ -317,6 +316,8 @@ async function pollCompressionStatus() {
         progressFill.style.width = `${data.progress}%`;
         progressText.textContent = `${data.progress}%`;
         
+        statusBadge.textContent = "Processing";
+        statusBadge.className = 'status-badge status-processing';
         if (data.status === 'completed') {
             statusBadge.textContent = 'Completed';
             statusBadge.className = 'status-badge status-completed';

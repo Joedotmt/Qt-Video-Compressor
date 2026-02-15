@@ -136,7 +136,6 @@ class VideoCompressorApp(tk.Tk):
         self.var_mute = tk.BooleanVar(value=False)
         
         self.var_preset = tk.StringVar(value="medium")
-        self.var_crf = tk.StringVar()
         self.var_tune = tk.StringVar(value="None")
 
         self.setup_ui()
@@ -235,14 +234,10 @@ class VideoCompressorApp(tk.Tk):
         preset_cb['values'] = ('ultrafast', 'fast', 'medium', 'slow', 'veryslow')
         preset_cb.grid(row=0, column=1, sticky="ew", padx=5)
 
-        ttk.Label(f4, text="CRF (0-51):").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Entry(f4, textvariable=self.var_crf).grid(row=1, column=1, sticky="ew", padx=5)
-        ttk.Label(f4, text="(Overrides target size)").grid(row=1, column=2, padx=5)
-
-        ttk.Label(f4, text="Tune:").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(f4, text="Tune:").grid(row=1, column=0, sticky="w", pady=5)
         tune_cb = ttk.Combobox(f4, textvariable=self.var_tune, state="readonly")
         tune_cb['values'] = ('None', 'film', 'animation', 'grain', 'stillimage')
-        tune_cb.grid(row=2, column=1, sticky="ew", padx=5)
+        tune_cb.grid(row=1, column=1, sticky="ew", padx=5)
         
         f4.columnconfigure(1, weight=1)
 
@@ -341,7 +336,6 @@ class VideoCompressorApp(tk.Tk):
         if not self.input_file: return
 
         # Validation
-        crf = safe_eval_expression(self.var_crf.get())
         vid_bitrate = 0
         
         width = ensure_even(safe_eval_expression(self.var_width.get()))
@@ -352,13 +346,12 @@ class VideoCompressorApp(tk.Tk):
             messagebox.showerror("Error", "Invalid Video Dimensions or FPS")
             return
 
-        if crf is None:
-            # Bitrate mode
-            vid_bitrate_str = self.var_calc_bitrate.get()
-            if vid_bitrate_str == "---" or int(vid_bitrate_str) < 100:
-                messagebox.showerror("Error", "Target size too small or invalid.")
-                return
-            vid_bitrate = int(vid_bitrate_str) * 1000 # to bps
+        # Bitrate mode - always use target size
+        vid_bitrate_str = self.var_calc_bitrate.get()
+        if vid_bitrate_str == "---" or int(vid_bitrate_str) < 100:
+            messagebox.showerror("Error", "Target size too small or invalid.")
+            return
+        vid_bitrate = int(vid_bitrate_str) * 1000 # to bps
         
         audio_bitrate_val = safe_eval_expression(self.var_audio_bitrate.get())
         audio_bitrate = int(audio_bitrate_val * 1000) if audio_bitrate_val else 128000
@@ -379,7 +372,6 @@ class VideoCompressorApp(tk.Tk):
             'v_bitrate': vid_bitrate,
             'vf': f"scale={width}:{height},fps={fps}",
             'preset': self.var_preset.get(),
-            'crf': crf,
             'tune': self.var_tune.get(),
             'mute': self.var_mute.get(),
             'a_bitrate': audio_bitrate,
@@ -395,10 +387,7 @@ class VideoCompressorApp(tk.Tk):
     def run_ffmpeg(self, p):
         cmd = ["ffmpeg", "-y", "-i", p['input'], "-c:v", "libx264", "-preset", p['preset']]
         
-        if p['crf'] is not None:
-            cmd.extend(["-crf", str(p['crf'])])
-        else:
-            cmd.extend(["-b:v", str(p['v_bitrate'])])
+        cmd.extend(["-b:v", str(p['v_bitrate'])])
             
         if p['tune'] != "None":
             cmd.extend(["-tune", p['tune']])

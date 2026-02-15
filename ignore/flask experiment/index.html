@@ -8,7 +8,7 @@
     <style>
         :root {
             --primary: #0078d4;
-            --primary-hover: #106ebe;
+            --primary-hover: #505050;
             --secondary: #f3f3f3;
             --bg-dark: #000000;
             --bg-card: #111111;
@@ -30,16 +30,18 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
             background: var(--bg-dark);
             color: var(--text-primary);
-            min-height: 100vh;
             overflow-x: hidden;
             position: relative;
             min-height: 100vh;
+
         }
 
         .container {
             padding: 20px;
             position: relative;
             z-index: 1;
+            max-width: 700px;
+            margin: 0 auto;
         }
 
         header {
@@ -93,26 +95,14 @@
         .drop-zone {
             border: 2px dashed var(--border);
             border-radius: 8px;
-            padding: 40px 20px;
             text-align: center;
+            display: flex;
             cursor: pointer;
             position: relative;
             overflow: hidden;
-        }
-
-        .drop-zone::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: none;
-            opacity: 0;
-        }
-
-        .drop-zone:hover::before {
-            opacity: 0;
+            height: 100px;
+            flex-direction: column;
+            justify-content: center;
         }
 
         .drop-zone.drag-over {
@@ -140,7 +130,7 @@
         }
 
         .file-info {
-            display: none;
+            display: block;
             margin-top: 15px;
             padding: 15px;
             background: rgba(0, 120, 212, 0.1);
@@ -189,7 +179,7 @@
             border: 3px solid var(--border);
             border-radius: 10px;
             border-top-left-radius: 0;
-            height: 300px;
+            height: 500px;
         }
 
         .tab {
@@ -352,7 +342,9 @@
 
         .progress-container {
             display: none;
-            margin-top: 20px;
+            margin: 20px 0;
+            display: flex;
+            gap: 10px;
         }
 
         .progress-container.visible {
@@ -362,11 +354,10 @@
 
         .progress-bar {
             width: 100%;
-            height: 6px;
-            background: #e0e0e0;
+            height: 28px;
+            background: var(--bg-input);
             border-radius: 3px;
             overflow: hidden;
-            margin-bottom: 12px;
             position: relative;
         }
 
@@ -404,7 +395,12 @@
             text-align: center;
             color: var(--text-secondary);
             font-size: 0.85rem;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            display: flex;
+        }
+        #progressText {
+            height: fit-content;
+            align-self: anchor-center;
+            margin-right: 10px;
         }
 
         .status-badge {
@@ -415,7 +411,14 @@
             font-weight: 600;
             text-transform: uppercase;
             letter-spacing: 0.5px;
-            margin-right: 10px;
+            width: 110px;
+            flex-shrink: 0;
+        }
+
+        .status-neutral {
+            background: var(--bg-input);
+            color: var(--bg-input);
+            border: 1px solid var(--border);
         }
 
         .status-processing {
@@ -557,11 +560,11 @@
 
         .download-section {
             display: none;
-            margin-top: 15px;
+            gap: 5px;
         }
 
         .download-section.visible {
-            display: block;
+            display: flex;
             animation: none;
         }
 
@@ -572,7 +575,6 @@
             padding: 15px;
             background: rgba(0, 120, 212, 0.1);
             border-radius: 6px;
-            margin-bottom: 12px;
             border-left: none;
         }
 
@@ -592,9 +594,11 @@
             letter-spacing: 0.5px;
             margin-bottom: 4px;
             font-weight: 600;
+            white-space: nowrap;
         }
 
         .stat-value {
+            white-space: nowrap;
             font-size: 1.1rem;
             color: var(--primary);
             font-weight: 700;
@@ -725,14 +729,6 @@
                     </div>
 
                     <div class="input-group">
-                        <label class="input-label">CRF (Constant Rate Factor)</label>
-                        <div class="input-wrapper">
-                            <input type="number" id="crf" placeholder="0-51, lower = better quality" min="0" max="51">
-                            <span class="input-unit">CRF</span>
-                        </div>
-                    </div>
-
-                    <div class="input-group">
                         <label class="input-label">Tune</label>
                         <select id="tune">
                             <option value="None">None</option>
@@ -746,7 +742,7 @@
             </div>
         </div>
 
-        <div class="card" style="margin-top: 1em;">
+        <div class="card" style="margin:0; margin-top: 1em; height: 220px; overflow: hidden;">
             <button class="btn" id="compressBtn" disabled>Compress</button>
 
             <div class="error-message" id="errorMessage"></div>
@@ -756,8 +752,8 @@
                     <div class="progress-fill" id="progressFill"></div>
                 </div>
                 <div class="progress-text">
-                    <span class="status-badge status-processing" id="statusBadge">Processing</span>
                     <span id="progressText">0%</span>
+                    <span class="status-badge status-neutral" id="statusBadge">Stopped</span>
                 </div>
             </div>
 

@@ -1,7 +1,6 @@
 import os
 import re
 import subprocess
-import json
 import threading
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -12,6 +11,7 @@ from pathlib import Path
 app = Flask(__name__, template_folder='.', static_folder='static')
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5GB max file size
 app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
+print(tempfile.gettempdir())
 
 # Windows-specific: suppress console windows
 SUBPROCESS_FLAGS = 0
@@ -25,10 +25,8 @@ compression_jobs = {}
 def check_ffmpeg_installed():
     """Check if FFmpeg and FFprobe are installed"""
     try:
-        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, 
-                      stderr=subprocess.PIPE, timeout=5, creationflags=SUBPROCESS_FLAGS)
-        subprocess.run(["ffprobe", "-version"], stdout=subprocess.PIPE, 
-                      stderr=subprocess.PIPE, timeout=5, creationflags=SUBPROCESS_FLAGS)
+        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, creationflags=SUBPROCESS_FLAGS)
+        subprocess.run(["ffprobe", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, creationflags=SUBPROCESS_FLAGS)
         return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -40,6 +38,7 @@ def safe_eval_expression(expr_str):
         expr_str = str(expr_str).strip()
         if not expr_str:
             return None
+        # Only allow digits, basic operators, and parentheses
         if not all(c in '0123456789+-*/.() ' for c in expr_str):
             return None
         result = eval(expr_str)
@@ -154,13 +153,8 @@ def compress_video(job_id, input_file, output_file, settings):
             "ffmpeg", "-y", "-i", input_file,
             "-c:v", "libx264",
             "-preset", settings.get('preset', 'medium'),
+            "-b:v", str(settings['video_bitrate']),
         ]
-        
-        # Use CRF if provided, otherwise use bitrate
-        if settings.get('crf') is not None:
-            command.extend(["-crf", str(settings['crf'])])
-        else:
-            command.extend(["-b:v", str(settings['video_bitrate'])])
         
         if settings.get('tune'):
             command.extend(["-tune", settings['tune']])
@@ -281,13 +275,6 @@ def start_compression():
         'duration': data.get('duration', 10.0)
     }
     
-    # CRF (optional)
-    crf = data.get('crf')
-    if crf:
-        crf_val = safe_eval_expression(crf)
-        if crf_val is not None and 0 <= crf_val <= 51:
-            settings['crf'] = int(crf_val)
-    
     # Tune (optional)
     tune = data.get('tune')
     if tune and tune != 'None':
@@ -297,21 +284,20 @@ def start_compression():
     audio_bitrate = safe_eval_expression(data.get('audio_bitrate', 128))
     settings['audio_bitrate'] = int(audio_bitrate * 1000) if audio_bitrate else 128000
     
-    # Calculate video bitrate if not using CRF
-    if 'crf' not in settings:
-        target_mb = safe_eval_expression(data.get('target_size'))
-        if target_mb is None or target_mb <= 0:
-            return jsonify({'error': 'Invalid target size'}), 400
-        
-        duration = settings['duration']
-        target_bits = target_mb * 1024 * 1024 * 8
-        video_bitrate = (target_bits / duration) - settings['audio_bitrate']
-        video_bitrate *= 0.97  # safety margin
-        
-        if video_bitrate < 100:
-            return jsonify({'error': 'Target size too small'}), 400
-        
-        settings['video_bitrate'] = int(video_bitrate)
+    # Calculate video bitrate
+    target_mb = safe_eval_expression(data.get('target_size'))
+    if target_mb is None or target_mb <= 0:
+        return jsonify({'error': 'Invalid target size'}), 400
+    
+    duration = settings['duration']
+    target_bits = target_mb * 1024 * 1024 * 8
+    video_bitrate = (target_bits / duration) - settings['audio_bitrate']
+    video_bitrate *= 0.97  # safety margin
+    
+    if video_bitrate < 100:
+        return jsonify({'error': 'Target size too small'}), 400
+    
+    settings['video_bitrate'] = int(video_bitrate)
     
     # Initialize job
     compression_jobs[job_id] = {

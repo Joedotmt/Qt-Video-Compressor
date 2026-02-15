@@ -51,12 +51,10 @@ def show_ffmpeg_installation_dialog():
     QMessageBox.critical(None, "FFmpeg Not Found", message)
 
 
-# Helper function to evaluate expressions
 def safe_eval_expression(expr_str):
     """Safely evaluate mathematical expressions like '720/2' or '1920-100'"""
     try:
-        # Remove whitespace
-        expr_str = expr_str.strip()
+        expr_str = str(expr_str).strip()
         if not expr_str:
             return None
         # Only allow digits, basic operators, and parentheses
@@ -68,7 +66,6 @@ def safe_eval_expression(expr_str):
         return None
 
 
-# Helper function to ensure dimensions are even
 def ensure_even(value):
     """Round down to nearest even number (required by libx264)"""
     if value is None:
@@ -97,7 +94,7 @@ class FFmpegWorker(QThread):
 
     def __init__(self, input_file, output_file, video_bitrate,
                  resolution, fps, preset, duration, audio_bitrate=128_000, mute_audio=False,
-                 crf=None, tune=None):
+                 tune=None):
         super().__init__()
         self.input_file = input_file
         self.output_file = output_file
@@ -108,7 +105,6 @@ class FFmpegWorker(QThread):
         self.duration = duration
         self.audio_bitrate = audio_bitrate
         self.mute_audio = mute_audio
-        self.crf = crf
         self.tune = tune
 
     def run(self):
@@ -129,13 +125,8 @@ class FFmpegWorker(QThread):
             "-i", self.input_file,
             "-c:v", "libx264",
             "-preset", self.preset,
+            "-b:v", str(self.video_bitrate),
         ]
-
-        # Use CRF if provided, otherwise use bitrate
-        if self.crf is not None:
-            command.extend(["-crf", str(self.crf)])
-        else:
-            command.extend(["-b:v", str(self.video_bitrate)])
 
         if self.tune:
             command.extend(["-tune", self.tune])
@@ -428,18 +419,6 @@ class VideoCompressor(QWidget):
         self.preset_box.addItems(["ultrafast", "fast", "medium", "slow"])
         tab3_layout.addWidget(self.preset_box)
 
-        # CRF with label
-        crf_layout = QHBoxLayout()
-        self.crf_input = QLineEdit()
-        self.crf_input.setPlaceholderText("0-51, lower = better quality")
-        self.crf_input.setMinimumHeight(40)
-        crf_layout.addWidget(self.crf_input)
-        crf_unit = QLabel("CRF")
-        crf_unit.setMinimumWidth(35)
-        crf_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        crf_layout.addWidget(crf_unit, 0, Qt.AlignmentFlag.AlignRight)
-        tab3_layout.addLayout(crf_layout)
-
         self.tune_box = QComboBox()
         self.tune_box.setMinimumHeight(40)
         self.tune_box.addItems(["None", "film", "animation", "grain", "stillimage"])
@@ -617,23 +596,9 @@ class VideoCompressor(QWidget):
             return
 
         try:
-            # CRF is optional; if provided, we use quality-driven compression instead of size-driven
-            crf = None
-            if self.crf_input.text().strip():
-                crf_val = safe_eval_expression(self.crf_input.text().strip())
-                if crf_val is not None:
-                    crf = int(crf_val)
-                    if not (0 <= crf <= 51):
-                        raise ValueError("CRF must be between 0 and 51")
-            
-            target_mb = None
-            video_bitrate = None
-            
-            # Only require target size if CRF is not being used
-            if crf is None:
-                target_mb = safe_eval_expression(self.size_input.text())
-                if target_mb is None:
-                    raise ValueError("Invalid target size")
+            target_mb = safe_eval_expression(self.size_input.text())
+            if target_mb is None:
+                raise ValueError("Invalid target size")
             
             width = ensure_even(safe_eval_expression(self.width_input.text()))
             if width is None:
@@ -664,17 +629,14 @@ class VideoCompressor(QWidget):
         duration = self.duration if self.duration is not None else self.get_duration(self.input_file)
         self.duration = duration
 
-        # Calculate video bitrate only if not using CRF
-        if crf is None:
-            target_bits = target_mb * 1024 * 1024 * 8
-            video_bitrate = (target_bits / duration) - audio_bitrate
-            video_bitrate *= 0.97  # safety margin
+        # Calculate video bitrate
+        target_bits = target_mb * 1024 * 1024 * 8
+        video_bitrate = (target_bits / duration) - audio_bitrate
+        video_bitrate *= 0.97  # safety margin
 
-            if video_bitrate < 100_000:
-                QMessageBox.warning(self, "Error", "Target size too small.")
-                return
-        else:
-            video_bitrate = 0  # Not used when CRF is set
+        if video_bitrate < 100_000:
+            QMessageBox.warning(self, "Error", "Target size too small.")
+            return
 
         suggested_name = os.path.splitext(os.path.basename(self.input_file))[0] + "_c.mp4"
         output = QFileDialog.getSaveFileName(self, "Save File", suggested_name, "MP4 Files (*.mp4)")[0]
@@ -692,7 +654,6 @@ class VideoCompressor(QWidget):
             duration,
             audio_bitrate,
             self.mute_audio.isChecked(),
-            crf,
             tune
         )
 
