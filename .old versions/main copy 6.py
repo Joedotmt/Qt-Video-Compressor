@@ -1,0 +1,624 @@
+import sys
+import os
+import subprocess
+import re
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QComboBox, QLineEdit, QProgressBar, QFileDialog,
+    QMessageBox, QCheckBox, QTabWidget
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QGuiApplication
+
+QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+    Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+)
+
+AUDIO_BITRATE = 128_000  # 128 kbps
+
+
+# Helper function to evaluate expressions
+def safe_eval_expression(expr_str):
+    """Safely evaluate mathematical expressions like '720/2' or '1920-100'"""
+    try:
+        # Remove whitespace
+        expr_str = expr_str.strip()
+        if not expr_str:
+            return None
+        # Only allow digits, basic operators, and parentheses
+        if not all(c in '0123456789+-*/.() ' for c in expr_str):
+            return None
+        result = eval(expr_str)
+        return result
+    except:
+        return None
+
+
+# Helper function to ensure dimensions are even
+def ensure_even(value):
+    """Round down to nearest even number (required by libx264)"""
+    if value is None:
+        return None
+    try:
+        val = int(value)
+        return val if val % 2 == 0 else val - 1
+    except:
+        return None
+
+
+# -----------------------------
+# Worker Thread
+# -----------------------------
+class FFmpegWorker(QThread):
+    progress_signal = pyqtSignal(int)
+    finished_signal = pyqtSignal(str)
+
+    def __init__(self, input_file, output_file, video_bitrate,
+                 resolution, fps, preset, duration, audio_bitrate=128_000, mute_audio=False):
+        super().__init__()
+        self.input_file = input_file
+        self.output_file = output_file
+        self.video_bitrate = video_bitrate
+        self.resolution = resolution
+        self.fps = fps
+        self.preset = preset
+        self.duration = duration
+        self.audio_bitrate = audio_bitrate
+        self.mute_audio = mute_audio
+
+    def run(self):
+
+        vf_filters = []
+
+        if self.resolution != "match":
+            vf_filters.append(f"scale={self.resolution}")
+
+        if self.fps != "match":
+            vf_filters.append(f"fps={self.fps}")
+
+        vf_string = ",".join(vf_filters) if vf_filters else None
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-i", self.input_file,
+            "-c:v", "libx264",
+            "-preset", self.preset,
+            "-b:v", str(self.video_bitrate),
+        ]
+
+        if self.mute_audio:
+            command.extend(["-an"])
+        else:
+            command.extend(["-c:a", "aac", "-b:a", str(self.audio_bitrate)])
+
+        if vf_string:
+            command.extend(["-vf", vf_string])
+
+        command.append(self.output_file)
+
+        # Print the command for debugging
+        print("FFmpeg Command:")
+        print(" ".join(command))
+        print()
+
+        process = subprocess.Popen(
+            command,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+
+        for line in process.stderr:
+            if "time=" in line:
+                time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
+                if time_match:
+                    seconds = self.time_to_seconds(time_match.group(1))
+                    percent = int((seconds / self.duration) * 100)
+                    self.progress_signal.emit(min(percent, 100))
+
+        process.wait()
+        self.finished_signal.emit("Done")
+
+    def time_to_seconds(self, time_str):
+        h, m, s = time_str.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+# -----------------------------
+# GUI
+# -----------------------------
+class VideoCompressor(QWidget):
+    @staticmethod
+    def get_duration(input_file):
+        command = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", input_file
+        ]
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+        try:
+            return float(result.stdout)
+        except:
+            return 10.0 # fallback
+
+    @staticmethod
+    def get_source_audio_bitrate(input_file):
+        """Extract audio bitrate from source video"""
+        command = [
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=bit_rate",
+            "-of", "default=noprint_wrappers=1:nokey=1", input_file
+        ]
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+        try:
+            bitrate = int(result.stdout.strip())
+            return bitrate // 1000  # Convert to kbps
+        except:
+            return 128  # fallback
+
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("Video Compressor")
+        self.resize(750, 700)
+        self.setMinimumSize(650, 600)
+        self.setAcceptDrops(True)
+
+        font = self.font()
+        font.setPointSize(11)
+        self.setFont(font)
+
+
+        self.setObjectName("MainWindow")
+
+
+        # Add stylesheet for disabled inputs
+        self.setStyleSheet(f"""
+            #MainWindow {{
+                background-color: {'black' if is_dark else 'white'};
+            }}
+            QLineEdit:disabled, QComboBox:disabled, QPushButton:disabled {{
+                border: 1px solid {'#1f1f1f' if is_dark else '#cccccc'};
+                border-radius: 5px;
+            }}
+            QLineEdit:disabled {{
+                padding: 5px;
+            }}
+            QPushButton:disabled {{
+                background-color: {'#2D2D2D' if is_dark else '#e0e0e0'};
+            }}
+                           
+
+            /* Make the specific panel dark */
+            #InputPanel {{
+                background-color: {'#111111' if is_dark else '#f0f0f0'};
+                border-radius: 5px;
+            }}
+
+            /* Force text inside this panel to be white (for the labels) */
+            QWidget#InputPanel QLabel {{
+                color: {"white" if is_dark else "black"};
+            }}
+        """)
+
+        layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(25, 25, 25, 25)
+
+        # Drag area
+        self.label = QLabel("Drag & Drop Video")
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setMinimumHeight(130)
+        self.label.setStyleSheet("""
+            QLabel {
+                border: 2px dashed gray;
+                border-radius: 10px;
+                padding: 25px;
+                font-size: 16px;
+                cursor: pointer;
+            }
+        """)
+        self.label.mousePressEvent = lambda event: self.browse_for_video()
+        layout.addWidget(self.label)
+
+        # Create tabbed interface
+        self.tabs = QTabWidget()
+
+        # Tab 1: File Size
+        tab1 = QWidget()
+        tab1.setObjectName("InputPanel")
+        tab1_layout = QVBoxLayout()
+        self.size_input = QLineEdit()
+        self.size_input.setPlaceholderText("Target Size (MB)")
+        self.size_input.setMinimumHeight(40)
+        tab1_layout.addWidget(self.size_input)
+
+        self.vid_bit_input = QLineEdit()
+        self.vid_bit_input.setPlaceholderText("Bitrate (kbps)")
+        self.vid_bit_input.setReadOnly(True)
+        self.vid_bit_input.setDisabled(True)
+        self.vid_bit_input.setMinimumHeight(40)
+        tab1_layout.addWidget(self.vid_bit_input)
+
+        tab1_layout.addStretch()
+        tab1.setLayout(tab1_layout)
+        self.tabs.addTab(tab1, "File Size")
+
+        # Tab 2: Video Settings
+        tab2 = QWidget()
+        tab2.setObjectName("InputPanel")
+        tab2_layout = QVBoxLayout()
+        tab2_layout.setSpacing(10)
+
+        resolution_layout = QHBoxLayout()
+        self.width_input = QLineEdit()
+        self.width_input.setPlaceholderText("Width")
+        self.width_input.setMinimumHeight(40)
+        resolution_layout.addWidget(self.width_input)
+
+        self.height_input = QLineEdit()
+        self.height_input.setPlaceholderText("Height")
+        self.height_input.setMinimumHeight(40)
+        resolution_layout.addWidget(self.height_input)
+        tab2_layout.addLayout(resolution_layout)
+
+        self.fps_input = QLineEdit()
+        self.fps_input.setPlaceholderText("FPS")
+        self.fps_input.setMinimumHeight(40)
+        tab2_layout.addWidget(self.fps_input)
+
+        # keep the tiny preview updated when inputs change
+        self.width_input.textChanged.connect(self.update_video_info_label)
+        self.height_input.textChanged.connect(self.update_video_info_label)
+        self.fps_input.textChanged.connect(self.update_video_info_label)
+
+        self.source_button = QPushButton("Use Source Settings")
+        self.source_button.setMinimumHeight(45)
+        self.source_button.clicked.connect(self.load_source_settings)
+        tab2_layout.addWidget(self.source_button)
+
+        # tiny size/fps preview (bottom of Video tab)
+        self.video_info_label = QLabel("")
+        self.video_info_label.setMinimumHeight(14)
+        self.video_info_label.setStyleSheet(
+            f"font-size:10px; color: {'#CCCCCC' if is_dark else '#666666'};"
+        )
+        tab2_layout.addWidget(self.video_info_label)
+
+        tab2_layout.addStretch()
+        tab2.setLayout(tab2_layout)
+        self.tabs.addTab(tab2, "Video")
+
+
+
+        # Tab 4: Audio
+        tab4 = QWidget()
+        tab4.setObjectName("InputPanel")
+        tab4_layout = QVBoxLayout()
+        tab4_layout.setSpacing(10)
+
+        self.mute_audio = QCheckBox("Mute Audio")
+        self.mute_audio.setMinimumHeight(40)
+        tab4_layout.addWidget(self.mute_audio)
+
+        self.audio_bitrate_input = QLineEdit()
+        self.audio_bitrate_input.setPlaceholderText("Audio Bitrate (kbps)")
+        self.audio_bitrate_input.setMinimumHeight(40)
+        self.audio_bitrate_input.setText("")
+        tab4_layout.addWidget(self.audio_bitrate_input)
+
+        self.audio_source_button = QPushButton("Match Source")
+        self.audio_source_button.setMinimumHeight(45)
+        self.audio_source_button.clicked.connect(self.load_source_audio_bitrate)
+        tab4_layout.addWidget(self.audio_source_button)
+        tab4_layout.addStretch()
+        tab4.setLayout(tab4_layout)
+        self.tabs.addTab(tab4, "Audio")
+
+        # Tab 3: Encoder
+        tab3 = QWidget()
+        tab3.setObjectName("InputPanel")
+        tab3_layout = QVBoxLayout()
+        self.preset_box = QComboBox()
+        self.preset_box.setMinimumHeight(40)
+        self.preset_box.addItems(["ultrafast", "fast", "medium", "slow"])
+        tab3_layout.addWidget(self.preset_box)
+        tab3_layout.addStretch()
+        tab3.setLayout(tab3_layout)
+        self.tabs.addTab(tab3, "Encoder")
+
+        layout.addWidget(self.tabs)
+
+        # Progress
+        self.progress = QProgressBar()
+        self.progress.setMinimumHeight(35)
+        layout.addWidget(self.progress)
+
+        # Compress button
+        self.button = QPushButton("Compress")
+        self.button.setMinimumHeight(50)
+        self.button.clicked.connect(self.start_compression)
+        layout.addWidget(self.button)
+
+        self.setLayout(layout)
+
+        self.input_file = None
+        self.disable_controls()
+
+        # --- new cached state and signal hookups ---
+        self.duration = None                           # cache ffprobe duration (call once)
+        self._source_audio_bitrate_kbps = None         # cache source audio bitrate (kbps)
+        self._last_estimate_key = None                 # avoid redundant estimate work
+
+        # update estimate while typing size or when audio/mute change
+        self.size_input.textChanged.connect(self.update_estimated_bitrate)
+        self.audio_bitrate_input.textChanged.connect(self.update_estimated_bitrate)
+        self.mute_audio.stateChanged.connect(lambda _: self.update_estimated_bitrate())
+
+    def disable_controls(self):
+        """Disable all controls"""
+        self.size_input.setEnabled(False)
+        self.width_input.setEnabled(False)
+        self.height_input.setEnabled(False)
+        self.fps_input.setEnabled(False)
+        self.source_button.setEnabled(False)
+        self.preset_box.setEnabled(False)
+        self.mute_audio.setEnabled(False)
+        self.audio_bitrate_input.setEnabled(False)
+        self.audio_source_button.setEnabled(False)
+        self.button.setEnabled(False)
+
+    def enable_controls(self):
+        """Enable all controls"""
+        self.size_input.setEnabled(True)
+        self.width_input.setEnabled(True)
+        self.height_input.setEnabled(True)
+        self.fps_input.setEnabled(True)
+        self.source_button.setEnabled(True)
+        self.preset_box.setEnabled(True)
+        self.mute_audio.setEnabled(True)
+        self.audio_bitrate_input.setEnabled(True)
+        self.audio_source_button.setEnabled(True)
+        self.button.setEnabled(True)
+
+    def browse_for_video(self):
+        """Open file dialog to select a video"""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Video", "", "Video Files (*.mp4 *.avi *.mkv *.mov)")
+        if file_path:
+            self.input_file = file_path
+            self.label.setText(os.path.basename(self.input_file))
+            self.enable_controls()
+
+            # get duration once and cache it (avoid repeated ffprobe)
+            self.duration = self.get_duration(self.input_file)
+
+            self.load_source_settings()
+            self.update_estimated_bitrate()
+
+    # -------------------------
+    # Drag & Drop
+    # -------------------------
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+
+    def dropEvent(self, event):
+        self.input_file = event.mimeData().urls()[0].toLocalFile()
+        self.label.setText(os.path.basename(self.input_file))
+        self.enable_controls()
+
+        # cache duration once
+        self.duration = self.get_duration(self.input_file)
+
+        self.load_source_settings()
+        self.update_estimated_bitrate()
+
+    # -------------------------
+    # Load Source Settings
+    # -------------------------
+    def load_source_settings(self):
+        if not self.input_file:
+            QMessageBox.warning(self, "Error", "Load a video first.")
+            return
+
+        command = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,r_frame_rate",
+            "-of", "default=noprint_wrappers=1",
+            self.input_file
+        ]
+
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+        output = result.stdout
+
+        width = re.search(r"width=(\d+)", output)
+        height = re.search(r"height=(\d+)", output)
+        fps = re.search(r"r_frame_rate=(\d+)/(\d+)", output)
+
+        if width and height:
+            self.width_input.setText(width.group(1))
+            self.height_input.setText(height.group(1))
+
+        if fps:
+            numerator = int(fps.group(1))
+            denominator = int(fps.group(2))
+            real_fps = round(numerator / denominator, 2)
+            self.fps_input.setText(str(real_fps))
+
+        self.load_source_audio_bitrate()
+
+    def load_source_audio_bitrate(self):
+        """Load audio bitrate from source video"""
+        if not self.input_file:
+            QMessageBox.warning(self, "Error", "Load a video first.")
+            return
+
+        bitrate = self.get_source_audio_bitrate(self.input_file)
+        self._source_audio_bitrate_kbps = bitrate           # cache it (kbps)
+        self.audio_bitrate_input.setText(str(bitrate))
+        self.update_estimated_bitrate()
+
+    # -------------------------
+    # Compression Start
+    # -------------------------
+    def start_compression(self): 
+        if not self.input_file:
+            QMessageBox.warning(self, "Error", "No video selected.")      
+            return
+
+        try:
+            target_mb = safe_eval_expression(self.size_input.text())
+            if target_mb is None:
+                raise ValueError("Invalid target size")
+            
+            width = ensure_even(safe_eval_expression(self.width_input.text()))
+            if width is None:
+                raise ValueError("Invalid width")
+            
+            height = ensure_even(safe_eval_expression(self.height_input.text()))
+            if height is None:
+                raise ValueError("Invalid height")
+            
+            fps = safe_eval_expression(self.fps_input.text())
+            if fps is None:
+                raise ValueError("Invalid FPS")
+            
+            audio_bitrate_expr = safe_eval_expression(self.audio_bitrate_input.text()) if not self.mute_audio.isChecked() else 0
+            if self.audio_bitrate_input.text().strip() and audio_bitrate_expr is None and not self.mute_audio.isChecked():
+                raise ValueError("Invalid audio bitrate")
+            audio_bitrate = int(audio_bitrate_expr * 1000) if audio_bitrate_expr else 0
+        except:
+            QMessageBox.warning(self, "Error", "Invalid numeric input.")
+            return
+
+        # use cached duration if available; call ffprobe only if we must
+        duration = self.duration if self.duration is not None else self.get_duration(self.input_file)
+        self.duration = duration
+
+        target_bits = target_mb * 1024 * 1024 * 8
+        video_bitrate = (target_bits / duration) - audio_bitrate
+
+        video_bitrate *= 0.97  # safety margin
+
+        if video_bitrate < 100_000:
+            QMessageBox.warning(self, "Error", "Target size too small.")
+            return
+
+        suggested_name = os.path.splitext(os.path.basename(self.input_file))[0] + "_c.mp4"
+        output = QFileDialog.getSaveFileName(self, "Save File", suggested_name, "MP4 Files (*.mp4)")[0]
+        if not output:
+            return
+
+        resolution = f"{width}:{height}"
+        self.worker = FFmpegWorker(
+            self.input_file,
+            output,
+            int(video_bitrate),
+            resolution,
+            fps,
+            self.preset_box.currentText(),
+            duration,
+            audio_bitrate,
+            self.mute_audio.isChecked()
+        )
+
+        self.worker.progress_signal.connect(self.progress.setValue)
+        self.worker.finished_signal.connect(
+            lambda _: QMessageBox.information(self, "Done", "Compression Finished")
+        )
+
+        self.worker.start()
+
+    # --- NEW: update the Estimated Bitrate field while typing (uses cached duration/audio) ---
+    def update_estimated_bitrate(self, _=None):
+        """Compute final video bitrate (kbps) using cached duration + current audio settings.
+        Does not call ffprobe repeatedly; uses cached values and skips if inputs didn't change."""
+        size_text = self.size_input.text().strip()
+        audio_text = self.audio_bitrate_input.text().strip()
+        muted = self.mute_audio.isChecked()
+
+        key = (size_text, audio_text, muted, self.duration)
+        if key == self._last_estimate_key:
+            return
+        self._last_estimate_key = key
+
+        # parse size
+        target_mb = safe_eval_expression(size_text)
+        if target_mb is None:
+            self.vid_bit_input.setText("")
+            return
+
+        # ensure we have duration (call once if still missing)
+        if self.duration is None and self.input_file:
+            self.duration = self.get_duration(self.input_file)
+
+        if not self.duration or self.duration <= 0:
+            self.vid_bit_input.setText("")
+            return
+
+        # determine audio bitrate (bps)
+        if muted:
+            audio_bps = 0
+        else:
+            audio_val = safe_eval_expression(audio_text)
+            if audio_val is not None:
+                audio_bps = int(audio_val * 1000)
+            elif self._source_audio_bitrate_kbps:
+                audio_bps = self._source_audio_bitrate_kbps * 1000
+            else:
+                audio_bps = AUDIO_BITRATE
+
+        # compute video bitrate (bps) same formula used in start_compression
+        target_bits = target_mb * 1024 * 1024 * 8
+        video_bps = (target_bits / self.duration) - audio_bps
+        video_bps *= 0.97  # safety margin
+
+        if video_bps <= 0:
+            self.vid_bit_input.setText("0")
+            return
+
+        # show kbps in the Estimated Bitrate field
+        video_kbps = int(video_bps / 1000)
+        self.vid_bit_input.setText(str(video_kbps))
+
+
+        # new: update the tiny "WxH @ FPS" label
+        self.update_video_info_label()
+
+    def update_video_info_label(self, _=None):
+        """Update the tiny video size + FPS preview label."""
+        w = safe_eval_expression(self.width_input.text().strip())
+        h = safe_eval_expression(self.height_input.text().strip())
+        fps = safe_eval_expression(self.fps_input.text().strip())
+
+        # Apply ensure_even to dimensions
+        w = ensure_even(w)
+        h = ensure_even(h)
+
+        parts = []
+        if w is not None and h is not None:
+            try:
+                parts.append(f"{int(w)}x{int(h)}")
+            except:
+                parts.append(f"{w}x{h}")
+
+        if fps is not None:
+            if isinstance(fps, float) and fps.is_integer():
+                fps_str = str(int(fps))
+            else:
+                fps_str = ("{:.2f}".format(fps)).rstrip('0').rstrip('.')
+            parts.append(f"@ {fps_str}")
+
+        self.video_info_label.setText(" ".join(parts))
+
+
+is_dark = False
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    is_dark = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
+    window = VideoCompressor()
+    window.show()
+    sys.exit(app.exec())
+
+
