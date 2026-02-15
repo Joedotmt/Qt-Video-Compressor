@@ -16,13 +16,18 @@ QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
 
 AUDIO_BITRATE = 128_000  # 128 kbps
 
+# Windows-specific: suppress console windows
+SUBPROCESS_FLAGS = 0
+if sys.platform == "win32":
+    SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW
+
 
 # Helper function to check if FFmpeg is installed
 def check_ffmpeg_installed():
     """Check if FFmpeg and FFprobe are installed"""
     try:
-        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-        subprocess.run(["ffprobe", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, creationflags=SUBPROCESS_FLAGS)
+        subprocess.run(["ffprobe", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, creationflags=SUBPROCESS_FLAGS)
         return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
@@ -78,6 +83,14 @@ def ensure_even(value):
 # -----------------------------
 # Worker Thread
 # -----------------------------
+class FFmpegCheckWorker(QThread):
+    check_complete = pyqtSignal(bool)
+
+    def run(self):
+        result = check_ffmpeg_installed()
+        self.check_complete.emit(result)
+
+
 class FFmpegWorker(QThread):
     progress_signal = pyqtSignal(int)
     finished_signal = pyqtSignal(str)
@@ -145,7 +158,8 @@ class FFmpegWorker(QThread):
         process = subprocess.Popen(
             command,
             stderr=subprocess.PIPE,
-            universal_newlines=True
+            universal_newlines=True,
+            creationflags=SUBPROCESS_FLAGS
         )
 
         for line in process.stderr:
@@ -174,7 +188,7 @@ class VideoCompressor(QWidget):
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", input_file
         ]
-        result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS)
         try:
             return float(result.stdout)
         except:
@@ -188,7 +202,7 @@ class VideoCompressor(QWidget):
             "-show_entries", "stream=bit_rate",
             "-of", "default=noprint_wrappers=1:nokey=1", input_file
         ]
-        result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS)
         try:
             bitrate = int(result.stdout.strip())
             return bitrate // 1000  # Convert to kbps
@@ -217,9 +231,7 @@ class VideoCompressor(QWidget):
         font.setPointSize(11)
         self.setFont(font)
 
-
         self.setObjectName("MainWindow")
-
 
         # Add stylesheet for disabled inputs
         self.setStyleSheet(f"""
@@ -465,6 +477,17 @@ class VideoCompressor(QWidget):
         self.audio_bitrate_input.textChanged.connect(self.update_estimated_bitrate)
         self.mute_audio.stateChanged.connect(lambda _: self.update_estimated_bitrate())
 
+        # Start FFmpeg check in background (non-blocking)
+        self.ffmpeg_check = FFmpegCheckWorker()
+        self.ffmpeg_check.check_complete.connect(self.on_ffmpeg_check_complete)
+        self.ffmpeg_check.start()
+
+    def on_ffmpeg_check_complete(self, is_installed):
+        """Handle FFmpeg check result"""
+        if not is_installed:
+            show_ffmpeg_installation_dialog()
+            sys.exit(1)
+
     def disable_controls(self):
         """Disable all controls"""
         self.size_input.setEnabled(False)
@@ -542,7 +565,7 @@ class VideoCompressor(QWidget):
             self.input_file
         ]
 
-        result = subprocess.run(command, stdout=subprocess.PIPE, text=True)
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS)
         output = result.stdout
 
         width = re.search(r"width=(\d+)", output)
