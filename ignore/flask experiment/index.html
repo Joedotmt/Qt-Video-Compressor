@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Compressor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Overpass:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #00ff88;
+            --primary-glow: rgba(0, 255, 136, 0.3);
+            --secondary: #ff0066;
+            --bg-dark: #0a0a0f;
+            --bg-card: #151520;
+            --bg-input: #1a1a28;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b8;
+            --border: rgba(255, 255, 255, 0.1);
+            --shadow: 0 8px 32px rgba(0, 255, 136, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Overpass', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 20% 50%, rgba(0, 255, 136, 0.05) 0%, transparent 50%),
+                radial-gradient(circle at 80% 80%, rgba(255, 0, 102, 0.05) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            position: relative;
+            z-index: 1;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 50px;
+            animation: fadeInDown 0.6s ease;
+        }
+
+        h1 {
+            font-family: 'Orbitron', monospace;
+            font-size: 3.5rem;
+            font-weight: 900;
+            letter-spacing: -2px;
+            background: linear-gradient(135deg, var(--primary) 0%, #00ccff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        .subtitle {
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            font-weight: 300;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 25px;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            animation: fadeInUp 0.6s ease;
+            animation-fill-mode: both;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 48px rgba(0, 255, 136, 0.15);
+        }
+
+        .card:nth-child(2) {
+            animation-delay: 0.1s;
+        }
+
+        .card:nth-child(3) {
+            animation-delay: 0.2s;
+        }
+
+        .card:nth-child(4) {
+            animation-delay: 0.3s;
+        }
+
+        .drop-zone {
+            border: 2px dashed var(--primary);
+            border-radius: 12px;
+            padding: 60px 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: linear-gradient(135deg, rgba(0, 255, 136, 0.03) 0%, rgba(0, 204, 255, 0.03) 100%);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .drop-zone::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, var(--primary-glow) 0%, transparent 70%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .drop-zone:hover::before {
+            opacity: 1;
+        }
+
+        .drop-zone.drag-over {
+            border-color: var(--secondary);
+            background: linear-gradient(135deg, rgba(255, 0, 102, 0.05) 0%, rgba(0, 255, 136, 0.05) 100%);
+            transform: scale(1.02);
+        }
+
+        .drop-zone:hover {
+            border-color: var(--primary);
+            box-shadow: 0 0 30px var(--primary-glow);
+        }
+
+        .drop-icon {
+            font-size: 3rem;
+            margin-bottom: 15px;
+            filter: drop-shadow(0 0 10px var(--primary-glow));
+        }
+
+        .drop-text {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .drop-subtext {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            opacity: 0.7;
+        }
+
+        .file-info {
+            display: none;
+            margin-top: 20px;
+            padding: 20px;
+            background: var(--bg-input);
+            border-radius: 8px;
+            border-left: 3px solid var(--primary);
+        }
+
+        .file-info.visible {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .info-row:last-child {
+            border-bottom: none;
+        }
+
+        .info-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .info-value {
+            color: var(--primary);
+            font-weight: 600;
+            font-family: 'Orbitron', monospace;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 25px;
+            border-bottom: 2px solid var(--border);
+            overflow-x: auto;
+            padding-bottom: 2px;
+        }
+
+        .tab {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.95rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            white-space: nowrap;
+            font-family: 'Orbitron', monospace;
+        }
+
+        .tab:hover {
+            color: var(--primary);
+        }
+
+        .tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+            text-shadow: 0 0 10px var(--primary-glow);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        .input-label {
+            display: block;
+            margin-bottom: 8px;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }
+
+        .input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select {
+            width: 100%;
+            padding: 14px 16px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            font-family: 'Overpass', sans-serif;
+        }
+
+        input:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--primary-glow);
+        }
+
+        input:disabled,
+        select:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .input-unit {
+            color: var(--primary);
+            font-weight: 600;
+            font-size: 0.9rem;
+            min-width: 50px;
+            text-align: center;
+            font-family: 'Orbitron', monospace;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, var(--primary) 0%, #00ccff 100%);
+            border: none;
+            border-radius: 8px;
+            color: var(--bg-dark);
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-family: 'Orbitron', monospace;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            transform: translate(-50%, -50%);
+            transition: width 0.6s, height 0.6s;
+        }
+
+        .btn:hover::before {
+            width: 300px;
+            height: 300px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 255, 136, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            background: var(--bg-input);
+            color: var(--text-secondary);
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .btn:disabled:hover {
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-secondary {
+            background: var(--bg-input);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-card);
+            border-color: var(--primary);
+        }
+
+        .progress-container {
+            display: none;
+            margin-top: 30px;
+        }
+
+        .progress-container.visible {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: var(--bg-input);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 15px;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary) 0%, #00ccff 100%);
+            width: 0%;
+            transition: width 0.3s ease;
+            box-shadow: 0 0 10px var(--primary-glow);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                rgba(255, 255, 255, 0.3),
+                transparent
+            );
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-text {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            font-family: 'Orbitron', monospace;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .status-processing {
+            background: rgba(0, 255, 136, 0.2);
+            color: var(--primary);
+            border: 1px solid var(--primary);
+        }
+
+        .status-completed {
+            background: rgba(0, 255, 136, 0.2);
+            color: var(--primary);
+            border: 1px solid var(--primary);
+        }
+
+        .status-failed {
+            background: rgba(255, 0, 102, 0.2);
+            color: var(--secondary);
+            border: 1px solid var(--secondary);
+        }
+
+        .checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px;
+            background: var(--bg-input);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 1px solid var(--border);
+        }
+
+        .checkbox-wrapper:hover {
+            border-color: var(--primary);
+        }
+
+        input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+            accent-color: var(--primary);
+        }
+
+        .checkbox-label {
+            font-size: 0.95rem;
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .estimated-bitrate {
+            margin-top: 15px;
+            padding: 15px;
+            background: linear-gradient(135deg, rgba(0, 255, 136, 0.05) 0%, rgba(0, 204, 255, 0.05) 100%);
+            border-radius: 8px;
+            border-left: 3px solid var(--primary);
+        }
+
+        .video-preview {
+            margin-top: 15px;
+            padding: 12px;
+            background: var(--bg-input);
+            border-radius: 6px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            text-align: center;
+            font-family: 'Orbitron', monospace;
+        }
+
+        .error-message {
+            padding: 15px;
+            background: rgba(255, 0, 102, 0.1);
+            border: 1px solid var(--secondary);
+            border-radius: 8px;
+            color: var(--secondary);
+            margin-top: 15px;
+            display: none;
+        }
+
+        .error-message.visible {
+            display: block;
+            animation: shake 0.5s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            75% { transform: translateX(10px); }
+        }
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2.5rem;
+            }
+
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+
+            .tabs {
+                gap: 5px;
+            }
+
+            .tab {
+                padding: 10px 16px;
+                font-size: 0.85rem;
+            }
+        }
+
+        .download-section {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .download-section.visible {
+            display: block;
+            animation: fadeInUp 0.4s ease;
+        }
+
+        .download-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            background: var(--bg-input);
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 3px solid var(--primary);
+        }
+
+        .download-stats {
+            display: flex;
+            gap: 30px;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 1.3rem;
+            color: var(--primary);
+            font-weight: 700;
+            font-family: 'Orbitron', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Compress</h1>
+            <p class="subtitle">Video Compression Tool</p>
+        </header>
+
+        <div class="card">
+            <div class="drop-zone" id="dropZone">
+                <div class="drop-icon">📹</div>
+                <div class="drop-text">Drag & Drop Video File</div>
+                <div class="drop-subtext">or click to browse</div>
+            </div>
+            <input type="file" id="fileInput" accept="video/*" style="display: none;">
+            
+            <div class="file-info" id="fileInfo">
+                <div class="info-row">
+                    <span class="info-label">Filename:</span>
+                    <span class="info-value" id="fileName">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Duration:</span>
+                    <span class="info-value" id="fileDuration">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Resolution:</span>
+                    <span class="info-value" id="fileResolution">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">FPS:</span>
+                    <span class="info-value" id="fileFps">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Size:</span>
+                    <span class="info-value" id="fileSize">-</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="tabs">
+                <button class="tab active" data-tab="size">File Size</button>
+                <button class="tab" data-tab="video">Video</button>
+                <button class="tab" data-tab="audio">Audio</button>
+                <button class="tab" data-tab="encoder">Encoder</button>
+            </div>
+
+            <div class="tab-content active" id="size-tab">
+                <div class="input-group">
+                    <label class="input-label">Target Size</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="targetSize" placeholder="Enter target size" step="0.01">
+                        <span class="input-unit">MB</span>
+                    </div>
+                </div>
+                <button class="btn btn-secondary" id="matchSourceSize">Match Source Size</button>
+                
+                <div class="estimated-bitrate">
+                    <div class="input-label">Estimated Video Bitrate</div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-top: 10px;">
+                        <input type="text" id="estimatedBitrate" readonly disabled style="flex: 1;">
+                        <span class="input-unit">kbps</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="video-tab">
+                <div class="input-group">
+                    <label class="input-label">Resolution</label>
+                    <div class="grid-2">
+                        <div class="input-wrapper">
+                            <input type="number" id="width" placeholder="Width">
+                            <span class="input-unit">px</span>
+                        </div>
+                        <div class="input-wrapper">
+                            <input type="number" id="height" placeholder="Height">
+                            <span class="input-unit">px</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="input-group">
+                    <label class="input-label">Frame Rate</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="fps" placeholder="FPS" step="0.01">
+                        <span class="input-unit">fps</span>
+                    </div>
+                </div>
+                
+                <button class="btn btn-secondary" id="useSourceSettings">Use Source Settings</button>
+                
+                <div class="video-preview" id="videoPreview"></div>
+            </div>
+
+            <div class="tab-content" id="audio-tab">
+                <div class="input-group">
+                    <div class="checkbox-wrapper">
+                        <input type="checkbox" id="muteAudio">
+                        <label class="checkbox-label" for="muteAudio">Mute Audio</label>
+                    </div>
+                </div>
+                
+                <div class="input-group">
+                    <label class="input-label">Audio Bitrate</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="audioBitrate" placeholder="Enter audio bitrate">
+                        <span class="input-unit">kbps</span>
+                    </div>
+                </div>
+                
+                <button class="btn btn-secondary" id="matchSourceAudio">Match Source Audio</button>
+            </div>
+
+            <div class="tab-content" id="encoder-tab">
+                <div class="input-group">
+                    <label class="input-label">Preset</label>
+                    <select id="preset">
+                        <option value="ultrafast">Ultrafast</option>
+                        <option value="fast">Fast</option>
+                        <option value="medium" selected>Medium</option>
+                        <option value="slow">Slow</option>
+                    </select>
+                </div>
+                
+                <div class="input-group">
+                    <label class="input-label">CRF (Constant Rate Factor)</label>
+                    <div class="input-wrapper">
+                        <input type="number" id="crf" placeholder="0-51, lower = better quality" min="0" max="51">
+                        <span class="input-unit">CRF</span>
+                    </div>
+                </div>
+                
+                <div class="input-group">
+                    <label class="input-label">Tune</label>
+                    <select id="tune">
+                        <option value="None">None</option>
+                        <option value="film">Film</option>
+                        <option value="animation">Animation</option>
+                        <option value="grain">Grain</option>
+                        <option value="stillimage">Still Image</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <button class="btn" id="compressBtn" disabled>Compress Video</button>
+            
+            <div class="error-message" id="errorMessage"></div>
+            
+            <div class="progress-container" id="progressContainer">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-text">
+                    <span class="status-badge status-processing" id="statusBadge">Processing</span>
+                    <span id="progressText">0%</span>
+                </div>
+            </div>
+            
+            <div class="download-section" id="downloadSection">
+                <div class="download-info">
+                    <div class="download-stats">
+                        <div class="stat">
+                            <div class="stat-label">Output Size</div>
+                            <div class="stat-value" id="outputSize">-</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-label">Compression</div>
+                            <div class="stat-value" id="compressionRatio">-</div>
+                        </div>
+                    </div>
+                </div>
+                <button class="btn" id="downloadBtn">Download Video</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
