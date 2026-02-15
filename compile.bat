@@ -1,0 +1,37 @@
+pyinstaller main.py ^
+    --noconfirm ^
+    --onefile ^
+    --windowed ^
+    --clean ^
+    --optimize 2 ^
+    --upx-dir="C:\upx" ^
+    --exclude-module ssl ^
+    --exclude-module unittest ^
+    --exclude-module asyncio ^
+    --exclude-module email ^
+    --exclude-module http ^
+    --exclude-module xml ^
+    --exclude-module pydoc ^
+    --exclude-module tkinter ^
+    --exclude-module matplotlib ^
+    --exclude-module numpy ^
+    --exclude-module PIL ^
+    --exclude-module PyQt6.QtWebEngine ^
+    --exclude-module PyQt6.QtNetwork ^
+    --exclude-module PyQt6.QtQml ^
+    --exclude-module PyQt6.QtQuick ^
+    --exclude-module PyQt6.QtSql ^
+    --exclude-module PyQt6.QtMultimedia ^
+    --exclude-module PyQt6.QtMultimediaWidgets ^
+    --exclude-module PyQt6.QtBluetooth ^
+    --exclude-module PyQt6.QtPositioning ^
+    --exclude-module PyQt6.QtNfc ^
+    --exclude-module PyQt6.QtSensors ^
+    --exclude-module PyQt6.QtSerialPort ^
+    --exclude-module PyQt6.QtWebSockets ^
+    --exclude-module multiprocessing ^
+    --exclude-module decimal ^
+    --exclude-module logging ^
+    --exclude-module distutils ^
+    --exclude-module setuptools ^
+    --name "QtVC"
