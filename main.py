@@ -94,7 +94,7 @@ class FFmpegWorker(QThread):
 
     def __init__(self, input_file, output_file, video_bitrate,
                  resolution, fps, preset, duration, audio_bitrate=128_000, mute_audio=False,
-                 tune=None):
+                 tune=None, speed=1.0):
         super().__init__()
         self.input_file = input_file
         self.output_file = output_file
@@ -106,6 +106,7 @@ class FFmpegWorker(QThread):
         self.audio_bitrate = audio_bitrate
         self.mute_audio = mute_audio
         self.tune = tune
+        self.speed = speed
 
     def run(self):
 
@@ -117,7 +118,17 @@ class FFmpegWorker(QThread):
         if self.fps != "match":
             vf_filters.append(f"fps={self.fps}")
 
+        # Add speed control via setpts filter
+        if self.speed != 1.0:
+            vf_filters.append(f"setpts=PTS/{self.speed}")
+
         vf_string = ",".join(vf_filters) if vf_filters else None
+
+        # Audio filter for speed control
+        af_filters = []
+        if self.speed != 1.0 and not self.mute_audio:
+            af_filters.append(f"atempo={self.speed}")
+        af_string = ",".join(af_filters) if af_filters else None
 
         command = [
             "ffmpeg",
@@ -139,6 +150,9 @@ class FFmpegWorker(QThread):
         if vf_string:
             command.extend(["-vf", vf_string])
 
+        if af_string:
+            command.extend(["-af", af_string])
+
         command.append(self.output_file)
 
         # Print the command for debugging
@@ -153,12 +167,15 @@ class FFmpegWorker(QThread):
             creationflags=SUBPROCESS_FLAGS
         )
 
+        # Adjust duration for speed when calculating progress
+        adjusted_duration = self.duration / self.speed
+
         for line in process.stderr:
             if "time=" in line:
                 time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
                 if time_match:
                     seconds = self.time_to_seconds(time_match.group(1))
-                    percent = int((seconds / self.duration) * 100)
+                    percent = int((seconds / adjusted_duration) * 100)
                     self.progress_signal.emit(min(percent, 100))
 
         process.wait()
@@ -167,7 +184,6 @@ class FFmpegWorker(QThread):
     def time_to_seconds(self, time_str):
         h, m, s = time_str.split(":")
         return int(h) * 3600 + int(m) * 60 + float(s)
-
 
 # -----------------------------
 # GUI
@@ -625,6 +641,15 @@ class VideoCompressor(QWidget):
             tune = self.tune_box.currentText()
             if tune == "None":
                 tune = None
+
+            # Get speed value
+            speed_text = self.speed_input.text().strip()
+            if speed_text:
+                speed = safe_eval_expression(speed_text)
+                if speed is None or speed <= 0:
+                    raise ValueError("Invalid speed value")
+            else:
+                speed = 1.0
         except:
             QMessageBox.warning(self, "Error", "Invalid numeric input.")
             return
@@ -658,7 +683,8 @@ class VideoCompressor(QWidget):
             duration,
             audio_bitrate,
             self.mute_audio.isChecked(),
-            tune
+            tune,
+            speed  # Pass the speed value
         )
 
         self.worker.progress_signal.connect(self.progress.setValue)
