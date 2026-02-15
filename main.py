@@ -273,7 +273,7 @@ class VideoCompressor(QWidget):
         self.label.mousePressEvent = lambda event: self.browse_for_video()
         layout.addWidget(self.label)
 
-        # Create tabbed interface
+        # Create tabbed interface (hidden initially)
         self.tabs = QTabWidget()
 
         # Tab 1: File Size
@@ -429,22 +429,24 @@ class VideoCompressor(QWidget):
         self.tabs.addTab(tab3, "Encoder")
 
         layout.addWidget(self.tabs)
+        self.tabs.hide()
 
         # Progress
         self.progress = QProgressBar()
         self.progress.setMinimumHeight(35)
         layout.addWidget(self.progress)
+        self.progress.hide()
 
         # Compress button
         self.button = QPushButton("Compress")
         self.button.setMinimumHeight(50)
         self.button.clicked.connect(self.start_compression)
         layout.addWidget(self.button)
+        self.button.hide()
 
         self.setLayout(layout)
 
         self.input_file = None
-        self.disable_controls()
 
         # --- new cached state and signal hookups ---
         self.duration = None                           # cache ffprobe duration (call once)
@@ -467,31 +469,11 @@ class VideoCompressor(QWidget):
             show_ffmpeg_installation_dialog()
             sys.exit(1)
 
-    def disable_controls(self):
-        """Disable all controls"""
-        self.size_input.setEnabled(False)
-        self.width_input.setEnabled(False)
-        self.height_input.setEnabled(False)
-        self.fps_input.setEnabled(False)
-        self.source_button.setEnabled(False)
-        self.preset_box.setEnabled(False)
-        self.mute_audio.setEnabled(False)
-        self.audio_bitrate_input.setEnabled(False)
-        self.audio_source_button.setEnabled(False)
-        self.button.setEnabled(False)
-
-    def enable_controls(self):
-        """Enable all controls"""
-        self.size_input.setEnabled(True)
-        self.width_input.setEnabled(True)
-        self.height_input.setEnabled(True)
-        self.fps_input.setEnabled(True)
-        self.source_button.setEnabled(True)
-        self.preset_box.setEnabled(True)
-        self.mute_audio.setEnabled(True)
-        self.audio_bitrate_input.setEnabled(True)
-        self.audio_source_button.setEnabled(True)
-        self.button.setEnabled(True)
+    def show_compression_controls(self):
+        """Show tabs, progress bar, and compress button"""
+        self.tabs.show()
+        self.progress.show()
+        self.button.show()
 
     def browse_for_video(self):
         """Open file dialog to select a video"""
@@ -499,7 +481,7 @@ class VideoCompressor(QWidget):
         if file_path:
             self.input_file = file_path
             self.label.setText(os.path.basename(self.input_file))
-            self.enable_controls()
+            self.show_compression_controls()
 
             # get duration once and cache it (avoid repeated ffprobe)
             self.duration = self.get_duration(self.input_file)
@@ -518,7 +500,7 @@ class VideoCompressor(QWidget):
     def dropEvent(self, event):
         self.input_file = event.mimeData().urls()[0].toLocalFile()
         self.label.setText(os.path.basename(self.input_file))
-        self.enable_controls()
+        self.show_compression_controls()
 
         # cache duration once
         self.duration = self.get_duration(self.input_file)
@@ -634,7 +616,7 @@ class VideoCompressor(QWidget):
         video_bitrate = (target_bits / duration) - audio_bitrate
         video_bitrate *= 0.97  # safety margin
 
-        if video_bitrate < 100_000:
+        if video_bitrate < 1:
             QMessageBox.warning(self, "Error", "Target size too small.")
             return
 
