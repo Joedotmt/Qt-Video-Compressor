@@ -93,8 +93,8 @@ class FFmpegWorker(QThread):
     finished_signal = pyqtSignal(str)
 
     def __init__(self, input_file, output_file, video_bitrate,
-                 resolution, fps, preset, duration, audio_bitrate=128_000, mute_audio=False,
-                 tune=None, speed=1.0):
+             resolution, fps, preset, duration, audio_bitrate=128_000, mute_audio=False,
+             tune=None, speed=1.0, codec="libx264"):
         super().__init__()
         self.input_file = input_file
         self.output_file = output_file
@@ -107,6 +107,7 @@ class FFmpegWorker(QThread):
         self.mute_audio = mute_audio
         self.tune = tune
         self.speed = speed
+        self.codec = codec
 
     def run(self):
 
@@ -134,12 +135,12 @@ class FFmpegWorker(QThread):
             "ffmpeg",
             "-y",
             "-i", self.input_file,
-            "-c:v", "libx264",
+            "-c:v", self.codec,
             "-preset", self.preset,
             "-b:v", str(self.video_bitrate),
         ]
 
-        if self.tune:
+        if self.tune and self.codec != "libaom-av1":  # AV1 doesn't use -tune
             command.extend(["-tune", self.tune])
 
         if self.mute_audio:
@@ -452,6 +453,16 @@ class VideoCompressor(QWidget):
         tab3_layout = QVBoxLayout()
         tab3_layout.setSpacing(10)
 
+        self.codec_box = QComboBox()
+        self.codec_box.setMinimumHeight(40)
+        self.codec_box.addItems(["H.264 (libx264)", "H.265 (libx265)", "AV1 (libaom-av1)"])
+        self.codec_box.currentIndexChanged.connect(self.update_encoder_options)
+        tab3_layout.addWidget(self.codec_box)
+
+        # Add a label for clarity
+        codec_label = QLabel("Video Codec")
+        tab3_layout.insertWidget(0, codec_label)
+
         self.preset_box = QComboBox()
         self.preset_box.setMinimumHeight(40)
         self.preset_box.addItems(["ultrafast", "fast", "medium", "slow"])
@@ -637,6 +648,16 @@ class VideoCompressor(QWidget):
                 raise ValueError("Invalid audio bitrate")
             audio_bitrate = int(audio_bitrate_expr * 1000) if audio_bitrate_expr else 0
 
+            codec_text = self.codec_box.currentText()
+            if "H.264" in codec_text:
+                codec = "libx264"
+            elif "H.265" in codec_text:
+                codec = "libx265"
+            elif "AV1" in codec_text:
+                codec = "libaom-av1"
+            else:
+                codec = "libx264"
+
             # Get tune value
             tune = self.tune_box.currentText()
             if tune == "None":
@@ -684,7 +705,8 @@ class VideoCompressor(QWidget):
             audio_bitrate,
             self.mute_audio.isChecked(),
             tune,
-            speed  # Pass the speed value
+            speed,
+            codec  # Add this parameter
         )
 
         self.worker.progress_signal.connect(self.progress.setValue)
@@ -775,6 +797,24 @@ class VideoCompressor(QWidget):
             parts.append(f"@ {fps_str}")
 
         self.video_info_label.setText(" ".join(parts))
+
+    def update_encoder_options(self):
+        """Update preset and tune options based on selected codec"""
+        codec_text = self.codec_box.currentText()
+        
+        self.preset_box.clear()
+        self.tune_box.clear()
+        
+        if "H.264" in codec_text:
+            self.preset_box.addItems(["ultrafast", "fast", "medium", "slow"])
+            self.tune_box.addItems(["None", "film", "animation", "grain", "stillimage"])
+        elif "H.265" in codec_text:
+            self.preset_box.addItems(["ultrafast", "fast", "medium", "slow"])
+            self.tune_box.addItems(["None", "film", "animation", "grain", "stillimage"])
+        elif "AV1" in codec_text:
+            self.preset_box.addItems(["0", "1", "2", "3", "4", "5", "6"])  # 0=best quality, 6=fastest
+            self.tune_box.addItems(["None"])  # AV1 doesn't have tune options
+            self.tune_box.setEnabled(False)
 
 
 is_dark = False
