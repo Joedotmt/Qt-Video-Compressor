@@ -408,6 +408,28 @@ class VideoCompressor(QWidget):
         tab4.setLayout(tab4_layout)
         self.tabs.addTab(tab4, "Audio")
 
+        # Tab 5: Fun
+        tab5 = QWidget()
+        tab5.setObjectName("InputPanel")
+        tab5_layout = QVBoxLayout()
+        tab5_layout.setSpacing(10)
+
+        # Speed with label
+        speed_layout = QHBoxLayout()
+        self.speed_input = QLineEdit()
+        self.speed_input.setPlaceholderText("1.0")
+        self.speed_input.setMinimumHeight(40)
+        speed_layout.addWidget(self.speed_input)
+        speed_unit = QLabel("x speed")
+        speed_unit.setMinimumWidth(25)
+        speed_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        speed_layout.addWidget(speed_unit, 0, Qt.AlignmentFlag.AlignRight)
+        tab5_layout.addLayout(speed_layout)
+
+        tab5_layout.addStretch()
+        tab5.setLayout(tab5_layout)
+        self.tabs.addTab(tab5, "Fun")
+
         # Tab 3: Encoder
         tab3 = QWidget()
         tab3.setObjectName("InputPanel")
