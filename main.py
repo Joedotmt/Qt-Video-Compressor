@@ -300,7 +300,6 @@ class VideoCompressor(QWidget):
                 border-radius: 10px;
                 padding: 25px;
                 font-size: 16px;
-                cursor: pointer;
             }
         """)
         self.label.mousePressEvent = lambda event: self.browse_for_video()
@@ -831,13 +830,13 @@ class VideoCompressor(QWidget):
             self.preset_box.addItems(["0", "1", "2", "3", "4", "5", "6"])  # 0=best quality, 6=fastest
             self.tune_box.addItems(["None"])  # AV1 doesn't have tune options
             self.tune_box.setEnabled(False)
-
+import time
 
 is_dark = False
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    
+
     # Check if FFmpeg is installed before proceeding
     if not check_ffmpeg_installed():
         show_ffmpeg_installation_dialog()
@@ -845,5 +844,11 @@ if __name__ == "__main__":
     
     is_dark = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
     window = VideoCompressor()
+
+
+
     window.show()
+    
+
+
     sys.exit(app.exec())
