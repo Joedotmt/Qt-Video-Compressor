@@ -13,7 +13,6 @@ AUDIO_BITRATE = 128_000  # 128 kbps
 
 # Windows-specific: suppress console windows
 SUBPROCESS_FLAGS = 0
-
 if sys.platform == "win32":
     SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW
 
@@ -35,20 +34,36 @@ def check_ffmpeg_installed():
 
 
 def show_ffmpeg_installation_dialog():
-    """Show installation instructions for FFmpeg"""
-    message = (
-        "FFmpeg is not installed on your system or not included in PATH.\n\n"
-        "Please install FFmpeg to use this application:\n\n"
-        "Windows:\n"
-        "  • Use: winget install FFmpeg (reccomended)\n"
-        "  • Or use: choco install ffmpeg (if using Chocolatey)\n"
-        "  • Or download from: https://ffmpeg.org/download.html\n\n"
-        "macOS:\n"
-        "  • brew install ffmpeg\n\n"
-        "Linux (Ubuntu/Debian):\n"
-        "  • sudo apt-get install ffmpeg\n\n"
-        "After installation, please restart this application."
-    )
+    """Show OS-specific installation instructions for FFmpeg"""
+    if sys.platform == "win32":
+        message = (
+            "FFmpeg is not installed on your system or not included in PATH.\n\n"
+            "Please install FFmpeg using one of these methods:\n\n"
+            "  • Recommended: winget install FFmpeg\n"
+            "  • Using Chocolatey: choco install ffmpeg\n"
+            "  • Manual download: https://ffmpeg.org/download.html\n\n"
+            "After installation, please restart this application."
+        )
+    elif sys.platform == "darwin":  # macOS
+        message = (
+            "FFmpeg is not installed on your system.\n\n"
+            "Please install FFmpeg using Homebrew:\n\n"
+            "  • brew install ffmpeg\n\n"
+            "If you don't have Homebrew installed, visit: https://brew.sh\n\n"
+            "After installation, please restart this application."
+        )
+    else:  # Linux and other Unix-like systems
+        message = (
+            "FFmpeg is not installed on your system.\n\n"
+            "Please install FFmpeg using your package manager:\n\n"
+            "Ubuntu/Debian:\n"
+            "  • sudo apt-get install ffmpeg\n\n"
+            "Fedora/RHEL:\n"
+            "  • sudo dnf install ffmpeg\n\n"
+            "Arch:\n"
+            "  • sudo pacman -S ffmpeg\n\n"
+            "After installation, please restart this application."
+        )
     QMessageBox.critical(None, "FFmpeg Not Found", message)
 
 
