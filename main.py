@@ -208,7 +208,7 @@ class VideoCompressor(QWidget):
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", input_file
         ]
-        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS)
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS, timeout=10)
         try:
             return float(result.stdout)
         except:
@@ -222,7 +222,7 @@ class VideoCompressor(QWidget):
             "-show_entries", "stream=bit_rate",
             "-of", "default=noprint_wrappers=1:nokey=1", input_file
         ]
-        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS)
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS, timeout=10)
         try:
             bitrate = int(result.stdout.strip())
             return bitrate // 1000  # Convert to kbps
@@ -301,8 +301,43 @@ class VideoCompressor(QWidget):
         self.label.mousePressEvent = lambda event: self.browse_for_video()
         layout.addWidget(self.label)
 
-        # Create tabbed interface (hidden initially)
+        # Create tabbed interface (will be populated on demand)
         self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+        self.tabs.hide()
+
+        # Progress
+        self.progress = QProgressBar()
+        self.progress.setMinimumHeight(35)
+        layout.addWidget(self.progress)
+        self.progress.hide()
+
+        # Compress button
+        self.button = QPushButton("Compress")
+        self.button.setMinimumHeight(50)
+        self.button.clicked.connect(self.start_compression)
+        layout.addWidget(self.button)
+        self.button.hide()
+
+        self.setLayout(layout)
+
+        self.input_file = None
+        self.tabs_initialized = False  # Track if tabs have been created
+
+        # --- new cached state ---
+        self.duration = None                           # cache ffprobe duration (call once)
+        self._source_audio_bitrate_kbps = None         # cache source audio bitrate (kbps)
+        self._last_estimate_key = None                 # avoid redundant estimate work
+
+        # Start FFmpeg check in background (non-blocking)
+        self.ffmpeg_check = FFmpegCheckWorker()
+        self.ffmpeg_check.check_complete.connect(self.on_ffmpeg_check_complete)
+        self.ffmpeg_check.start()
+
+    def initialize_tabs(self):
+        """Create and setup all tabs (called on first video load)"""
+        if self.tabs_initialized:
+            return
 
         # Tab 1: File Size
         tab1 = QWidget()
@@ -488,40 +523,12 @@ class VideoCompressor(QWidget):
         tab3.setLayout(tab3_layout)
         self.tabs.addTab(tab3, "Encoder")
 
-        layout.addWidget(self.tabs)
-        self.tabs.hide()
-
-        # Progress
-        self.progress = QProgressBar()
-        self.progress.setMinimumHeight(35)
-        layout.addWidget(self.progress)
-        self.progress.hide()
-
-        # Compress button
-        self.button = QPushButton("Compress")
-        self.button.setMinimumHeight(50)
-        self.button.clicked.connect(self.start_compression)
-        layout.addWidget(self.button)
-        self.button.hide()
-
-        self.setLayout(layout)
-
-        self.input_file = None
-
-        # --- new cached state and signal hookups ---
-        self.duration = None                           # cache ffprobe duration (call once)
-        self._source_audio_bitrate_kbps = None         # cache source audio bitrate (kbps)
-        self._last_estimate_key = None                 # avoid redundant estimate work
-
-        # update estimate while typing size or when audio/mute change
+        # Setup signal connections for input fields
         self.size_input.textChanged.connect(self.update_estimated_bitrate)
         self.audio_bitrate_input.textChanged.connect(self.update_estimated_bitrate)
         self.mute_audio.stateChanged.connect(lambda _: self.update_estimated_bitrate())
 
-        # Start FFmpeg check in background (non-blocking)
-        self.ffmpeg_check = FFmpegCheckWorker()
-        self.ffmpeg_check.check_complete.connect(self.on_ffmpeg_check_complete)
-        self.ffmpeg_check.start()
+        self.tabs_initialized = True
 
     def on_ffmpeg_check_complete(self, is_installed):
         """Handle FFmpeg check result"""
@@ -531,6 +538,7 @@ class VideoCompressor(QWidget):
 
     def show_compression_controls(self):
         """Show tabs, progress bar, and compress button"""
+        self.initialize_tabs()  # Create tabs on first video load
         self.tabs.show()
         self.progress.show()
         self.button.show()
@@ -586,7 +594,7 @@ class VideoCompressor(QWidget):
             self.input_file
         ]
 
-        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS)
+        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS, timeout=10)
         output = result.stdout
 
         width = re.search(r"width=(\d+)", output)
@@ -826,20 +834,17 @@ class VideoCompressor(QWidget):
             self.preset_box.addItems(["0", "1", "2", "3", "4", "5", "6"])  # 0=best quality, 6=fastest
             self.tune_box.addItems(["None"])  # AV1 doesn't have tune options
             self.tune_box.setEnabled(False)
-import time
 
 is_dark = False
 if __name__ == "__main__":
-    st = time.time()
-
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-
+    
+    # Detect dark mode before creating window
     is_dark = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
+    
     window = VideoCompressor()
 
     window.show()
-    
-    print(f"Startup time: {time.time() - st:.2f} seconds")
 
     sys.exit(app.exec())

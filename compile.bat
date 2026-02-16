@@ -1,1 +1,1 @@
-pyinstaller QtVC.spec
+pyinstaller "Qt Video Compressor.spec"
