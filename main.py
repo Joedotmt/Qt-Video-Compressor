@@ -13,13 +13,9 @@ AUDIO_BITRATE = 128_000  # 128 kbps
 
 # Windows-specific: suppress console windows
 SUBPROCESS_FLAGS = 0
-if sys.platform == "win32":
-    SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW
 
 if sys.platform == "win32":
-    f = open(os.devnull, 'w')
-    sys.stdout = f
-    sys.stderr = f
+    SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW
 
 
 # Helper function to check if FFmpeg is installed
@@ -834,21 +830,16 @@ import time
 
 is_dark = False
 if __name__ == "__main__":
+    st = time.time()
+
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
 
-    # Check if FFmpeg is installed before proceeding
-    if not check_ffmpeg_installed():
-        show_ffmpeg_installation_dialog()
-        sys.exit(1)
-    
     is_dark = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
     window = VideoCompressor()
 
-
-
     window.show()
     
-
+    print(f"Startup time: {time.time() - st:.2f} seconds")
 
     sys.exit(app.exec())
