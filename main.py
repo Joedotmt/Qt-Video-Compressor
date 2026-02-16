@@ -8,18 +8,19 @@ from PyQt6.QtWidgets import (
     QMessageBox, QCheckBox, QTabWidget
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QGuiApplication
-
-QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
-    Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-)
 
 AUDIO_BITRATE = 128_000  # 128 kbps
 
 # Windows-specific: suppress console windows
 SUBPROCESS_FLAGS = 0
+
 if sys.platform == "win32":
     SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW
+
+if sys.platform == "win32":
+    f = open(os.devnull, 'w')
+    sys.stdout = f
+    sys.stderr = f
 
 
 # Helper function to check if FFmpeg is installed
