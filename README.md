@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/logo.png" alt="Qt Video Compressor Logo" width="200" height="auto" />
+  <img src="https://raw.githubusercontent.com/Joedotmt/Qt-Video-Compressor/refs/heads/main/logo-dark.png" alt="Qt Video Compressor Logo" width="200" height="auto" />
   <br>
   <em>(still making it)</em>
 </div>
