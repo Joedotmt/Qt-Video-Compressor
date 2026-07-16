@@ -17,11 +17,6 @@ import tempfile
 import threading
 from typing import Callable
 
-try:
-    import winreg
-except ImportError:  # pragma: no cover - only available on Windows
-    winreg = None
-
 
 DEFAULT_AUDIO_BITRATE_KBPS = 128
 TARGET_SAFETY_MARGIN = 0.97
@@ -118,48 +113,6 @@ def _windows_winget_link_directories() -> list[Path]:
     return directories
 
 
-def _windows_registered_search_path() -> str | None:
-    """Read the current Windows PATH instead of relying on our parent process."""
-    if winreg is None:
-        return None
-
-    paths: list[str] = []
-    locations = (
-        (
-            winreg.HKEY_LOCAL_MACHINE,
-            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
-        ),
-        (winreg.HKEY_CURRENT_USER, r"Environment"),
-    )
-    for root, key_name in locations:
-        try:
-            with winreg.OpenKey(root, key_name) as key:
-                value, _value_type = winreg.QueryValueEx(key, "Path")
-        except OSError:
-            continue
-        if isinstance(value, str) and value.strip():
-            paths.append(os.path.expandvars(value.strip()))
-
-    return os.pathsep.join(paths) if paths else None
-
-
-def _toolchain_from_search_path(search_path: str | None = None) -> FFmpegToolchain | None:
-    which_kwargs = {"path": search_path} if search_path is not None else {}
-    ffmpeg_path = shutil.which("ffmpeg", **which_kwargs)
-    ffprobe_path = shutil.which("ffprobe", **which_kwargs)
-    if not ffmpeg_path or not ffprobe_path:
-        return None
-
-    resolved_ffmpeg = Path(ffmpeg_path).resolve()
-    resolved_ffprobe = Path(ffprobe_path).resolve()
-    if resolved_ffmpeg.parent != resolved_ffprobe.parent:
-        return None
-    return FFmpegToolchain(
-        ffmpeg=str(resolved_ffmpeg),
-        ffprobe=str(resolved_ffprobe),
-    )
-
-
 def _toolchain_can_run(toolchain: FFmpegToolchain) -> bool:
     for executable in (toolchain.ffmpeg, toolchain.ffprobe):
         try:
@@ -181,21 +134,25 @@ def _toolchain_can_run(toolchain: FFmpegToolchain) -> bool:
 def resolve_ffmpeg_toolchain(
     directory_hint: str | os.PathLike[str] | None = None,
 ) -> FFmpegToolchain | None:
-    """Find and validate FFmpeg on PATH, in a hint, or in Windows locations."""
+    """Find and validate FFmpeg on PATH, in a hint, or in WinGet links."""
     candidates: list[FFmpegToolchain] = []
     if directory_hint is not None:
         candidates.append(_toolchain_from_directory(directory_hint))
 
-    inherited_toolchain = _toolchain_from_search_path()
-    if inherited_toolchain is not None:
-        candidates.append(inherited_toolchain)
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
+    if ffmpeg_path and ffprobe_path:
+        resolved_ffmpeg = Path(ffmpeg_path).resolve()
+        resolved_ffprobe = Path(ffprobe_path).resolve()
+        if resolved_ffmpeg.parent == resolved_ffprobe.parent:
+            candidates.append(
+                FFmpegToolchain(
+                    ffmpeg=str(resolved_ffmpeg),
+                    ffprobe=str(resolved_ffprobe),
+                )
+            )
 
     if _IS_WINDOWS:
-        registered_path = _windows_registered_search_path()
-        if registered_path is not None:
-            registered_toolchain = _toolchain_from_search_path(registered_path)
-            if registered_toolchain is not None:
-                candidates.append(registered_toolchain)
         candidates.extend(
             _toolchain_from_directory(directory)
             for directory in _windows_winget_link_directories()
