@@ -41,6 +41,14 @@ The application requires FFmpeg to function.
     pip install PyQt6
     `
 3. **Boom** just `python main.py`
+
+## Automated builds
+
+Every push triggers the GitHub Actions workflow in `.github/workflows/build.yml`.
+When both jobs finish, the workflow run contains a Windows `.exe` artifact and a
+Linux `.AppImage` artifact. You can also start the workflow manually from the
+repository's **Actions** tab.
+
 ## 🖥️ Usage
 
 1.  Run the application

@@ -1,0 +1,91 @@
+name: Build desktop apps
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  windows:
+    name: Windows executable
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install build dependencies
+        run: python -m pip install --requirement requirements-build.txt
+
+      - name: Build executable
+        run: python -m PyInstaller --noconfirm --clean "Qt Video Compressor.spec"
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: Qt-Video-Compressor-Windows
+          path: dist/Qt Video Compressor.exe
+          if-no-files-found: error
+
+  linux:
+    name: Linux AppImage
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install build dependencies
+        run: python -m pip install --requirement requirements-build.txt
+
+      - name: Build Linux executable
+        run: python -m PyInstaller --noconfirm --clean "Qt Video Compressor.spec"
+
+      - name: Assemble AppDir
+        shell: bash
+        run: |
+          mkdir -p AppDir/usr/bin
+          install -m 755 "dist/Qt Video Compressor" "AppDir/usr/bin/Qt Video Compressor"
+          install -m 644 packaging/linux/qt-video-compressor.desktop AppDir/qt-video-compressor.desktop
+          install -m 644 logo-dark.png AppDir/qt-video-compressor.png
+          ln -s "usr/bin/Qt Video Compressor" AppDir/AppRun
+          ln -s qt-video-compressor.png AppDir/.DirIcon
+
+      - name: Build AppImage
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            --output appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
+            ./appimagetool-x86_64.AppImage \
+            AppDir "dist/Qt Video Compressor.AppImage"
+          test -x "dist/Qt Video Compressor.AppImage"
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v7
+        with:
+          name: Qt-Video-Compressor-Linux
+          path: dist/Qt Video Compressor.AppImage
+          if-no-files-found: error
+

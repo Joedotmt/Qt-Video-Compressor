@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Qt Video Compressor
+Comment=Compress videos to a target file size
+Exec=qt-video-compressor %F
+Icon=qt-video-compressor
+Terminal=false
+Categories=AudioVideo;
