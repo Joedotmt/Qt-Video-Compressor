@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import threading
 
@@ -17,16 +20,17 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from compressor import (  # noqa: E402
     DEFAULT_AUDIO_BITRATE_KBPS,
+    FFmpegToolchain,
     FFmpegRunner,
     SourceInfo,
     VIDEO_CODECS,
     ValidationError,
     calculate_video_bitrate,
-    check_ffmpeg_installed,
     ensure_even,
     evaluate_expression,
     make_job,
     probe_source,
+    resolve_ffmpeg_toolchain,
 )
 
 
@@ -91,6 +95,9 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
         self._probe_generation = 0
         self._pending_file: str | None = None
         self._ffmpeg_state = "checking"
+        self._ffmpeg_toolchain: FFmpegToolchain | None = None
+        self._ffmpeg_dialog: Adw.AlertDialog | None = None
+        self._ffmpeg_prompted = False
         self._runner: FFmpegRunner | None = None
         self._worker_thread: threading.Thread | None = None
         self._close_dialog: Adw.AlertDialog | None = None
@@ -148,6 +155,11 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
         self.open_status_button.add_css_class("suggested-action")
         self.open_status_button.add_css_class("pill")
         self.open_status_button.set_action_name("app.open")
+
+        self.install_ffmpeg_button = Gtk.Button.new_with_mnemonic("_Install FFmpeg…")
+        self.install_ffmpeg_button.add_css_class("suggested-action")
+        self.install_ffmpeg_button.add_css_class("pill")
+        self.install_ffmpeg_button.connect("clicked", self._show_ffmpeg_install_dialog)
 
         self.editor = self._build_editor()
         self.page_stack.add_named(self.editor, "editor")
@@ -351,15 +363,16 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
 
     def _check_requirements(self) -> None:
         def work() -> None:
-            available = check_ffmpeg_installed()
-            GLib.idle_add(self._requirements_checked, available)
+            toolchain = resolve_ffmpeg_toolchain()
+            GLib.idle_add(self._requirements_checked, toolchain)
 
         threading.Thread(target=work, name="ffmpeg-check", daemon=True).start()
 
-    def _requirements_checked(self, available: bool) -> bool:
+    def _requirements_checked(self, toolchain: FFmpegToolchain | None) -> bool:
         self.status_spinner.stop()
-        self._ffmpeg_state = "ready" if available else "missing"
-        if available:
+        self._ffmpeg_toolchain = toolchain
+        self._ffmpeg_state = "ready" if toolchain is not None else "missing"
+        if toolchain is not None:
             self.open_header_button.set_sensitive(True)
             self.status_page.set_icon_name("video-x-generic-symbolic")
             self.status_page.set_title("Choose a Video")
@@ -371,11 +384,142 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
         else:
             self.status_page.set_icon_name("dialog-error-symbolic")
             self.status_page.set_title("FFmpeg Is Required")
-            self.status_page.set_description(
-                "Install FFmpeg and FFprobe, then reopen the application.\n\n"
-                "On Ubuntu: sudo apt install ffmpeg"
+            if os.name == "nt":
+                self.status_page.set_description(
+                    "Install the separate FFmpeg Essentials package to compress videos."
+                )
+                self.status_page.set_child(self.install_ffmpeg_button)
+                if not self._ffmpeg_prompted:
+                    GLib.idle_add(self._show_ffmpeg_install_dialog)
+            else:
+                self.status_page.set_description(
+                    "Install FFmpeg and FFprobe, then reopen the application.\n\n"
+                    "On Ubuntu: sudo apt install ffmpeg"
+                )
+                self.status_page.set_child(None)
+        return GLib.SOURCE_REMOVE
+
+    def _show_ffmpeg_install_dialog(self, _button: Gtk.Button | None = None) -> bool:
+        if os.name != "nt" or self._ffmpeg_state != "missing":
+            return GLib.SOURCE_REMOVE
+        if self._ffmpeg_dialog is not None:
+            return GLib.SOURCE_REMOVE
+
+        dialog = Adw.AlertDialog.new(
+            "Install FFmpeg?",
+            "Video Compressor can install the FFmpeg Essentials Build using "
+            "Windows Package Manager. FFmpeg is a separate GPLv3 package.",
+        )
+        dialog.add_response("cancel", "Not Now")
+        dialog.add_response("install", "Install FFmpeg")
+        dialog.set_close_response("cancel")
+        dialog.set_default_response("cancel")
+        dialog.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
+        dialog.connect("response", self._ffmpeg_install_response)
+        self._ffmpeg_prompted = True
+        self._ffmpeg_dialog = dialog
+        dialog.present(self)
+        return GLib.SOURCE_REMOVE
+
+    def _ffmpeg_install_response(self, _dialog: Adw.AlertDialog, response: str) -> None:
+        self._ffmpeg_dialog = None
+        if response == "install":
+            self._install_ffmpeg()
+
+    def _install_ffmpeg(self) -> None:
+        if os.name != "nt" or self._ffmpeg_state == "installing":
+            return
+
+        self._ffmpeg_state = "installing"
+        self.install_ffmpeg_button.set_sensitive(False)
+        self.status_page.set_icon_name("system-run-symbolic")
+        self.status_page.set_title("Installing FFmpeg")
+        self.status_page.set_description("Downloading the FFmpeg Essentials Build…")
+        self.status_spinner.start()
+        self.status_page.set_child(self.status_spinner)
+
+        def work() -> None:
+            error = ""
+            try:
+                winget = shutil.which("winget")
+                if winget is None:
+                    local_app_data = os.environ.get("LOCALAPPDATA")
+                    if local_app_data:
+                        candidate = Path(
+                            local_app_data, "Microsoft", "WindowsApps", "winget.exe"
+                        )
+                        if candidate.is_file():
+                            winget = str(candidate)
+                completed = subprocess.run(
+                    [
+                        winget or "winget",
+                        "install",
+                        "--id",
+                        "Gyan.FFmpeg.Essentials",
+                        "--exact",
+                        "--source",
+                        "winget",
+                        "--scope",
+                        "user",
+                        "--silent",
+                        "--accept-package-agreements",
+                        "--accept-source-agreements",
+                        "--disable-interactivity",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    timeout=15 * 60,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    check=False,
+                )
+                if completed.returncode != 0:
+                    output = completed.stderr.strip() or completed.stdout.strip()
+                    detail = (
+                        output.splitlines()[-1]
+                        if output
+                        else "WinGet could not install FFmpeg."
+                    )
+                    error = detail[-500:]
+            except FileNotFoundError:
+                error = "Windows Package Manager (winget) is not available."
+            except subprocess.TimeoutExpired:
+                error = "The FFmpeg installation timed out."
+            except OSError as exception:
+                error = f"Could not start the FFmpeg installer: {exception}"
+
+            toolchain = resolve_ffmpeg_toolchain()
+            if toolchain is not None:
+                error = ""
+            if not error and toolchain is None:
+                error = (
+                    "FFmpeg was installed but could not be found. "
+                    "Restart the application and try again."
+                )
+            GLib.idle_add(self._ffmpeg_install_finished, toolchain, error)
+
+        threading.Thread(target=work, name="ffmpeg-install", daemon=True).start()
+
+    def _ffmpeg_install_finished(
+        self, toolchain: FFmpegToolchain | None, error: str
+    ) -> bool:
+        self.install_ffmpeg_button.set_sensitive(True)
+        if toolchain is not None:
+            self._show_toast("FFmpeg installed")
+            return self._requirements_checked(toolchain)
+
+        self._requirements_checked(None)
+        if "winget) is not available" in error:
+            advice = (
+                "Install or update Microsoft App Installer, or install FFmpeg manually "
+                "and restart Video Compressor."
             )
-            self.status_page.set_child(None)
+        else:
+            advice = (
+                "You can also install it from a terminal with:\n"
+                "winget install --id Gyan.FFmpeg.Essentials --exact"
+            )
+        self._show_error("Could Not Install FFmpeg", f"{error}\n\n{advice}")
         return GLib.SOURCE_REMOVE
 
     def open_file_dialog(self) -> None:
@@ -455,7 +599,7 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
 
         def work() -> None:
             try:
-                info = probe_source(path)
+                info = probe_source(path, self._ffmpeg_toolchain)
                 error: Exception | None = None
             except Exception as caught:  # converted into a user-facing error on the main thread
                 info = None
@@ -694,7 +838,7 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
             self._show_error("Check Compression Settings", str(error))
             return
 
-        runner = FFmpegRunner()
+        runner = FFmpegRunner(self._ffmpeg_toolchain)
         self._runner = runner
         self._set_running(True)
 
@@ -780,6 +924,9 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
         dialog.present(self)
 
     def _on_close_request(self, _window: Adw.ApplicationWindow) -> bool:
+        if self._ffmpeg_state == "installing":
+            self._show_toast("Wait for the FFmpeg installation to finish.")
+            return True
         if self._runner is None:
             return False
         if self._close_dialog is not None:
@@ -876,8 +1023,14 @@ class VideoCompressorApplication(Adw.Application):
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = list(argv if argv is not None else sys.argv)
+    smoke_test = "--smoke-test" in arguments
+    if smoke_test:
+        arguments.remove("--smoke-test")
     application = VideoCompressorApplication()
-    return application.run(argv if argv is not None else sys.argv)
+    if smoke_test:
+        GLib.timeout_add(1500, lambda: application.quit() or GLib.SOURCE_REMOVE)
+    return application.run(arguments)
 
 
 if __name__ == "__main__":

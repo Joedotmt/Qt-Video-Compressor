@@ -27,6 +27,7 @@ VIDEO_CODECS = {
 }
 
 SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+_IS_WINDOWS = os.name == "nt"
 _TIME_PATTERN = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 
 
@@ -40,6 +41,14 @@ class ProbeError(CompressorError):
 
 class ValidationError(CompressorError):
     """Raised when compression settings are not usable."""
+
+
+@dataclass(frozen=True)
+class FFmpegToolchain:
+    """Absolute paths to a validated FFmpeg and FFprobe toolchain."""
+
+    ffmpeg: str
+    ffprobe: str
 
 
 @dataclass(frozen=True)
@@ -84,9 +93,28 @@ class RunResult:
     message: str = ""
 
 
-def check_ffmpeg_installed() -> bool:
-    """Return whether both FFmpeg executables can be run successfully."""
-    for executable in ("ffmpeg", "ffprobe"):
+def _toolchain_from_directory(directory: str | os.PathLike[str]) -> FFmpegToolchain:
+    suffix = ".exe" if _IS_WINDOWS else ""
+    directory_path = Path(directory).expanduser().resolve()
+    return FFmpegToolchain(
+        ffmpeg=str(directory_path / f"ffmpeg{suffix}"),
+        ffprobe=str(directory_path / f"ffprobe{suffix}"),
+    )
+
+
+def _windows_winget_link_directories() -> list[Path]:
+    directories = []
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        directories.append(Path(local_app_data, "Microsoft", "WinGet", "Links"))
+    program_files = os.environ.get("ProgramFiles")
+    if program_files:
+        directories.append(Path(program_files, "WinGet", "Links"))
+    return directories
+
+
+def _toolchain_can_run(toolchain: FFmpegToolchain) -> bool:
+    for executable in (toolchain.ffmpeg, toolchain.ffprobe):
         try:
             completed = subprocess.run(
                 [executable, "-version"],
@@ -101,6 +129,51 @@ def check_ffmpeg_installed() -> bool:
         if completed.returncode != 0:
             return False
     return True
+
+
+def resolve_ffmpeg_toolchain(
+    directory_hint: str | os.PathLike[str] | None = None,
+) -> FFmpegToolchain | None:
+    """Find and validate FFmpeg on PATH, in a hint, or in WinGet links."""
+    candidates: list[FFmpegToolchain] = []
+    if directory_hint is not None:
+        candidates.append(_toolchain_from_directory(directory_hint))
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffprobe_path = shutil.which("ffprobe")
+    if ffmpeg_path and ffprobe_path:
+        resolved_ffmpeg = Path(ffmpeg_path).resolve()
+        resolved_ffprobe = Path(ffprobe_path).resolve()
+        if resolved_ffmpeg.parent == resolved_ffprobe.parent:
+            candidates.append(
+                FFmpegToolchain(
+                    ffmpeg=str(resolved_ffmpeg),
+                    ffprobe=str(resolved_ffprobe),
+                )
+            )
+
+    if _IS_WINDOWS:
+        candidates.extend(
+            _toolchain_from_directory(directory)
+            for directory in _windows_winget_link_directories()
+        )
+
+    seen: set[tuple[str, str]] = set()
+    for toolchain in candidates:
+        key = (toolchain.ffmpeg, toolchain.ffprobe)
+        if key in seen:
+            continue
+        seen.add(key)
+        if _toolchain_can_run(toolchain):
+            return toolchain
+    return None
+
+
+def check_ffmpeg_installed(
+    directory_hint: str | os.PathLike[str] | None = None,
+) -> bool:
+    """Return whether both FFmpeg executables can be found and run."""
+    return resolve_ffmpeg_toolchain(directory_hint) is not None
 
 
 def evaluate_expression(expression: str) -> float | None:
@@ -168,14 +241,14 @@ def parse_frame_rate(value: str | None) -> float:
     return fps
 
 
-def probe_source(path: str) -> SourceInfo:
+def probe_source(path: str, toolchain: FFmpegToolchain | None = None) -> SourceInfo:
     """Read all source metadata in one FFprobe invocation."""
     source_path = Path(path)
     if not source_path.is_file():
         raise ProbeError("The selected video is not a local file.")
 
     command = [
-        "ffprobe",
+        toolchain.ffprobe if toolchain is not None else "ffprobe",
         "-v",
         "error",
         "-show_entries",
@@ -340,14 +413,16 @@ def build_atempo_filters(speed: float) -> list[str]:
     return [f"atempo={factor:.10g}" for factor in factors]
 
 
-def build_ffmpeg_command(job: CompressionJob) -> list[str]:
+def build_ffmpeg_command(
+    job: CompressionJob, toolchain: FFmpegToolchain | None = None
+) -> list[str]:
     """Construct the FFmpeg argument vector for a compression job."""
     video_filters = [f"scale={job.width}:{job.height}", f"fps={job.fps:.10g}"]
     if not math.isclose(job.speed, 1.0):
         video_filters.append(f"setpts=PTS/{job.speed:.10g}")
 
     command = [
-        "ffmpeg",
+        toolchain.ffmpeg if toolchain is not None else "ffmpeg",
         "-y",
         "-i",
         job.input_file,
@@ -385,7 +460,8 @@ def parse_progress_seconds(line: str) -> float | None:
 class FFmpegRunner:
     """Run one FFmpeg job with thread-safe graceful and forced cancellation."""
 
-    def __init__(self) -> None:
+    def __init__(self, toolchain: FFmpegToolchain | None = None) -> None:
+        self._toolchain = toolchain
         self._stop_requested = threading.Event()
         self._process: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
@@ -441,7 +517,9 @@ class FFmpegRunner:
             os.close(descriptor)
             os.unlink(temporary_name)
             temporary_path = Path(temporary_name)
-            command = build_ffmpeg_command(replace(job, output_file=str(temporary_path)))
+            command = build_ffmpeg_command(
+                replace(job, output_file=str(temporary_path)), self._toolchain
+            )
 
             with self._lock:
                 if self._stop_requested.is_set():

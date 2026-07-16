@@ -1,5 +1,6 @@
 import json
 import errno
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -9,6 +10,7 @@ from unittest import mock
 
 from compressor import (
     CompressionJob,
+    FFmpegToolchain,
     FFmpegRunner,
     ProbeError,
     SourceInfo,
@@ -16,12 +18,14 @@ from compressor import (
     build_atempo_filters,
     build_ffmpeg_command,
     calculate_video_bitrate,
+    check_ffmpeg_installed,
     ensure_even,
     evaluate_expression,
     make_job,
     parse_frame_rate,
     parse_progress_seconds,
     probe_source,
+    resolve_ffmpeg_toolchain,
 )
 
 
@@ -40,6 +44,105 @@ class ExpressionTests(unittest.TestCase):
         self.assertEqual(ensure_even(1921), 1920)
         self.assertEqual(ensure_even(1080), 1080)
         self.assertIsNone(ensure_even(None))
+
+
+class ToolchainTests(unittest.TestCase):
+    @staticmethod
+    def successful_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0)
+
+    def test_directory_hint_resolves_and_checks_both_executables(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+            "compressor.shutil.which", return_value=None
+        ), mock.patch(
+            "compressor.subprocess.run", side_effect=self.successful_run
+        ) as run:
+            toolchain = resolve_ffmpeg_toolchain(directory)
+
+        expected_ffmpeg = str(Path(directory, f"ffmpeg{suffix}").resolve())
+        expected_ffprobe = str(Path(directory, f"ffprobe{suffix}").resolve())
+        self.assertEqual(toolchain, FFmpegToolchain(expected_ffmpeg, expected_ffprobe))
+        self.assertEqual(
+            [call.args[0][0] for call in run.call_args_list],
+            [expected_ffmpeg, expected_ffprobe],
+        )
+
+    def test_path_discovery_returns_absolute_executable_paths(self):
+        suffix = ".exe" if os.name == "nt" else ""
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {
+                "ffmpeg": str(Path(directory, f"ffmpeg{suffix}")),
+                "ffprobe": str(Path(directory, f"ffprobe{suffix}")),
+            }
+            with mock.patch(
+                "compressor.shutil.which", side_effect=paths.get
+            ), mock.patch(
+                "compressor.subprocess.run", side_effect=self.successful_run
+            ):
+                toolchain = resolve_ffmpeg_toolchain()
+
+        self.assertEqual(
+            toolchain,
+            FFmpegToolchain(
+                str(Path(paths["ffmpeg"]).resolve()),
+                str(Path(paths["ffprobe"]).resolve()),
+            ),
+        )
+
+    def test_path_discovery_does_not_mix_installations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {
+                "ffmpeg": str(Path(directory, "one", "ffmpeg")),
+                "ffprobe": str(Path(directory, "two", "ffprobe")),
+            }
+            with mock.patch(
+                "compressor.shutil.which", side_effect=paths.get
+            ), mock.patch("compressor._IS_WINDOWS", False), mock.patch(
+                "compressor.subprocess.run", side_effect=self.successful_run
+            ) as run:
+                toolchain = resolve_ffmpeg_toolchain()
+
+        self.assertIsNone(toolchain)
+        run.assert_not_called()
+
+    def test_nonzero_version_check_rejects_toolchain(self):
+        def version_check(command, **_kwargs):
+            return subprocess.CompletedProcess(
+                command, 1 if "ffprobe" in Path(command[0]).stem else 0
+            )
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+            "compressor.shutil.which", return_value=None
+        ), mock.patch("compressor._IS_WINDOWS", False), mock.patch(
+            "compressor.subprocess.run", side_effect=version_check
+        ):
+            self.assertIsNone(resolve_ffmpeg_toolchain(directory))
+            self.assertFalse(check_ffmpeg_installed(directory))
+
+    def test_windows_winget_links_are_searched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            local_app_data = Path(directory, "LocalAppData")
+            program_files = Path(directory, "ProgramFiles")
+            links = local_app_data / "Microsoft" / "WinGet" / "Links"
+            with mock.patch("compressor._IS_WINDOWS", True), mock.patch.dict(
+                os.environ,
+                {
+                    "LOCALAPPDATA": str(local_app_data),
+                    "ProgramFiles": str(program_files),
+                },
+            ), mock.patch("compressor.shutil.which", return_value=None), mock.patch(
+                "compressor.subprocess.run", side_effect=self.successful_run
+            ):
+                toolchain = resolve_ffmpeg_toolchain()
+
+        self.assertEqual(
+            toolchain,
+            FFmpegToolchain(
+                str(Path(links, "ffmpeg.exe").resolve()),
+                str(Path(links, "ffprobe.exe").resolve()),
+            ),
+        )
 
 
 class PlanningTests(unittest.TestCase):
@@ -116,6 +219,11 @@ class CommandTests(unittest.TestCase):
         self.assertIn("scale=1280:720,fps=30", command)
         self.assertNotIn("-af", command)
         self.assertEqual(command[-1], "/tmp/output video.mp4")
+
+    def test_command_uses_explicit_ffmpeg_path(self):
+        toolchain = FFmpegToolchain("/tools/ffmpeg", "/tools/ffprobe")
+        command = build_ffmpeg_command(self.job(), toolchain)
+        self.assertEqual(command[0], "/tools/ffmpeg")
 
     def test_av1_uses_cpu_used_instead_of_preset(self):
         command = build_ffmpeg_command(
@@ -196,6 +304,31 @@ class ProbeTests(unittest.TestCase):
         with self.assertRaises(ProbeError):
             parse_frame_rate("0/0")
 
+    def test_probe_uses_explicit_ffprobe_path(self):
+        payload = {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "width": 640,
+                    "height": 360,
+                    "avg_frame_rate": "24/1",
+                }
+            ],
+            "format": {"duration": "2"},
+        }
+        toolchain = FFmpegToolchain("/tools/ffmpeg", "/tools/ffprobe")
+        completed = subprocess.CompletedProcess(
+            [toolchain.ffprobe], 0, stdout=json.dumps(payload), stderr=""
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory, "sample.mp4")
+            video.write_bytes(b"data")
+            with mock.patch(
+                "compressor.subprocess.run", return_value=completed
+            ) as run:
+                probe_source(str(video), toolchain)
+        self.assertEqual(run.call_args.args[0][0], toolchain.ffprobe)
+
 
 class RunnerTests(unittest.TestCase):
     @staticmethod
@@ -212,8 +345,11 @@ class RunnerTests(unittest.TestCase):
         )
 
     def test_success_atomically_replaces_output(self):
+        commands = []
+
         class SuccessfulProcess:
             def __init__(self, command, **_kwargs):
+                commands.append(command)
                 Path(command[-1]).write_bytes(b"complete video")
                 self.stderr = iter(["frame=1 time=00:00:05.00 speed=1x\n"])
 
@@ -227,11 +363,15 @@ class RunnerTests(unittest.TestCase):
             output = Path(directory, "output.mp4")
             output.write_bytes(b"original")
             updates = []
+            toolchain = FFmpegToolchain("/tools/ffmpeg", "/tools/ffprobe")
             with mock.patch("compressor.subprocess.Popen", SuccessfulProcess):
-                result = FFmpegRunner().run(self.job(str(output)), updates.append)
+                result = FFmpegRunner(toolchain).run(
+                    self.job(str(output)), updates.append
+                )
             self.assertEqual(result.status, "success")
             self.assertEqual(output.read_bytes(), b"complete video")
             self.assertEqual(updates, [50, 100])
+            self.assertEqual(commands[0][0], toolchain.ffmpeg)
 
     def test_cancellation_removes_partial_output_and_preserves_destination(self):
         started = threading.Event()

@@ -67,3 +67,47 @@ jobs:
           manifest-path: io.github.Joedotmt.VideoCompressor.yml
           artifact-name: VideoCompressor-${{ runner.arch }}.flatpak
           cache-key: flatpak-builder-${{ github.sha }}
+
+  windows:
+    name: Windows installer
+    runs-on: windows-2022
+    steps:
+      - name: Preserve repository line endings
+        run: git config --global core.autocrlf input
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install MSYS2 UCRT64 build dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-gobject
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-libadwaita
+            mingw-w64-ucrt-x86_64-pyinstaller
+
+      - name: Run unit tests on Windows
+        shell: msys2 {0}
+        run: python -m unittest discover -v
+
+      - name: Build Windows application and installer
+        shell: msys2 {0}
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build.ps1
+
+      - name: Smoke test packaged application
+        shell: pwsh
+        timeout-minutes: 1
+        run: .\dist\windows\VideoCompressor\VideoCompressor.exe --smoke-test
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoCompressor-windows-x64
+          path: |
+            dist/windows/installer/*.exe
+            dist/windows/installer/*.sha256
+          if-no-files-found: error
