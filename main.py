@@ -96,8 +96,6 @@ class JoemtVideoCompressorWindow(Adw.ApplicationWindow):
         self._pending_file: str | None = None
         self._ffmpeg_state = "checking"
         self._ffmpeg_toolchain: FFmpegToolchain | None = None
-        self._ffmpeg_dialog: Adw.AlertDialog | None = None
-        self._ffmpeg_prompted = False
         self._runner: FFmpegRunner | None = None
         self._worker_thread: threading.Thread | None = None
         self._close_dialog: Adw.AlertDialog | None = None
@@ -156,10 +154,10 @@ class JoemtVideoCompressorWindow(Adw.ApplicationWindow):
         self.open_status_button.add_css_class("pill")
         self.open_status_button.set_action_name("app.open")
 
-        self.install_ffmpeg_button = Gtk.Button.new_with_mnemonic("_Install FFmpeg…")
+        self.install_ffmpeg_button = Gtk.Button.new_with_mnemonic("_Install FFmpeg")
         self.install_ffmpeg_button.add_css_class("suggested-action")
         self.install_ffmpeg_button.add_css_class("pill")
-        self.install_ffmpeg_button.connect("clicked", self._show_ffmpeg_install_dialog)
+        self.install_ffmpeg_button.connect("clicked", self._install_ffmpeg)
 
         self.editor = self._build_editor()
         self.page_stack.add_named(self.editor, "editor")
@@ -386,11 +384,10 @@ class JoemtVideoCompressorWindow(Adw.ApplicationWindow):
             self.status_page.set_title("FFmpeg Is Required")
             if os.name == "nt":
                 self.status_page.set_description(
-                    "Install the separate FFmpeg Essentials package to compress videos."
+                    f"{APPLICATION_NAME} can install the FFmpeg Essentials Build using "
+                    "Windows Package Manager. FFmpeg is a separate GPLv3 package."
                 )
                 self.status_page.set_child(self.install_ffmpeg_button)
-                if not self._ffmpeg_prompted:
-                    GLib.idle_add(self._show_ffmpeg_install_dialog)
             else:
                 self.status_page.set_description(
                     "Install FFmpeg and FFprobe, then reopen the application.\n\n"
@@ -399,34 +396,7 @@ class JoemtVideoCompressorWindow(Adw.ApplicationWindow):
                 self.status_page.set_child(None)
         return GLib.SOURCE_REMOVE
 
-    def _show_ffmpeg_install_dialog(self, _button: Gtk.Button | None = None) -> bool:
-        if os.name != "nt" or self._ffmpeg_state != "missing":
-            return GLib.SOURCE_REMOVE
-        if self._ffmpeg_dialog is not None:
-            return GLib.SOURCE_REMOVE
-
-        dialog = Adw.AlertDialog.new(
-            "Install FFmpeg?",
-            f"{APPLICATION_NAME} can install the FFmpeg Essentials Build using "
-            "Windows Package Manager. FFmpeg is a separate GPLv3 package.",
-        )
-        dialog.add_response("cancel", "Not Now")
-        dialog.add_response("install", "Install FFmpeg")
-        dialog.set_close_response("cancel")
-        dialog.set_default_response("cancel")
-        dialog.set_response_appearance("install", Adw.ResponseAppearance.SUGGESTED)
-        dialog.connect("response", self._ffmpeg_install_response)
-        self._ffmpeg_prompted = True
-        self._ffmpeg_dialog = dialog
-        dialog.present(self)
-        return GLib.SOURCE_REMOVE
-
-    def _ffmpeg_install_response(self, _dialog: Adw.AlertDialog, response: str) -> None:
-        self._ffmpeg_dialog = None
-        if response == "install":
-            self._install_ffmpeg()
-
-    def _install_ffmpeg(self) -> None:
+    def _install_ffmpeg(self, _button: Gtk.Button | None = None) -> None:
         if os.name != "nt" or self._ffmpeg_state == "installing":
             return
 
