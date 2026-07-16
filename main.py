@@ -2,12 +2,13 @@ import sys
 import os
 import subprocess
 import re
+import threading
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QLineEdit, QProgressBar, QFileDialog,
     QMessageBox, QCheckBox, QTabWidget
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 
 AUDIO_BITRATE = 128_000  # 128 kbps
 
@@ -102,7 +103,6 @@ class FFmpegCheckWorker(QThread):
 
 class FFmpegWorker(QThread):
     progress_signal = pyqtSignal(int)
-    finished_signal = pyqtSignal(str)
 
     def __init__(self, input_file, output_file, video_bitrate,
              resolution, fps, preset, duration, audio_bitrate=128_000, mute_audio=False,
@@ -120,9 +120,37 @@ class FFmpegWorker(QThread):
         self.tune = tune
         self.speed = speed
         self.codec = codec
+        self.result_status = "pending"
+        self.result_message = ""
+        self._stop_requested = threading.Event()
+        self._process = None
+        self._process_lock = threading.Lock()
+
+    def stop(self):
+        """Request cancellation and terminate FFmpeg if it is running."""
+        self._stop_requested.set()
+        with self._process_lock:
+            process = self._process
+
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+
+    def force_stop(self):
+        """Forcefully stop FFmpeg if graceful termination did not finish."""
+        self._stop_requested.set()
+        with self._process_lock:
+            process = self._process
+
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
 
     def run(self):
-
         vf_filters = []
 
         if self.resolution != "match":
@@ -173,26 +201,61 @@ class FFmpegWorker(QThread):
         print(" ".join(command))
         print()
 
-        process = subprocess.Popen(
-            command,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-            creationflags=SUBPROCESS_FLAGS
-        )
+        process = None
+        error_lines = []
 
-        # Adjust duration for speed when calculating progress
-        adjusted_duration = self.duration / self.speed
+        try:
+            # Holding the lock while starting the process closes the race where a
+            # stop request could arrive between the initial check and Popen.
+            with self._process_lock:
+                if self._stop_requested.is_set():
+                    self.result_status = "stopped"
+                    return
 
-        for line in process.stderr:
-            if "time=" in line:
-                time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
-                if time_match:
-                    seconds = self.time_to_seconds(time_match.group(1))
-                    percent = int((seconds / adjusted_duration) * 100)
-                    self.progress_signal.emit(min(percent, 100))
+                process = subprocess.Popen(
+                    command,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    creationflags=SUBPROCESS_FLAGS
+                )
+                self._process = process
 
-        process.wait()
-        self.finished_signal.emit("Done")
+            # Adjust duration for speed when calculating progress
+            adjusted_duration = self.duration / self.speed
+
+            for line in process.stderr:
+                stripped_line = line.strip()
+                if stripped_line:
+                    error_lines.append(stripped_line)
+                    error_lines = error_lines[-10:]
+
+                if "time=" in line:
+                    time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
+                    if time_match:
+                        seconds = self.time_to_seconds(time_match.group(1))
+                        percent = int((seconds / adjusted_duration) * 100)
+                        self.progress_signal.emit(min(percent, 100))
+
+            return_code = process.wait()
+
+            if self._stop_requested.is_set():
+                self.result_status = "stopped"
+            elif return_code == 0:
+                self.result_status = "success"
+                self.progress_signal.emit(100)
+            else:
+                self.result_status = "failed"
+                detail = error_lines[-1] if error_lines else "No error details were provided."
+                self.result_message = f"FFmpeg exited with code {return_code}.\n\n{detail}"
+        except Exception as error:
+            if self._stop_requested.is_set():
+                self.result_status = "stopped"
+            else:
+                self.result_status = "failed"
+                self.result_message = str(error)
+        finally:
+            with self._process_lock:
+                self._process = None
 
     def time_to_seconds(self, time_str):
         h, m, s = time_str.split(":")
@@ -316,13 +379,26 @@ class VideoCompressor(QWidget):
         self.button = QPushButton("Compress")
         self.button.setMinimumHeight(50)
         self.button.clicked.connect(self.start_compression)
-        layout.addWidget(self.button)
+
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setMinimumHeight(50)
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop_compression)
+
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.button)
+        button_layout.addWidget(self.stop_button)
+        layout.addLayout(button_layout)
         self.button.hide()
+        self.stop_button.hide()
 
         self.setLayout(layout)
 
         self.input_file = None
         self.tabs_initialized = False  # Track if tabs have been created
+        self.worker = None
+        self.is_compressing = False
+        self._closing = False
 
         # --- new cached state ---
         self.duration = None                           # cache ffprobe duration (call once)
@@ -542,6 +618,7 @@ class VideoCompressor(QWidget):
         self.tabs.show()
         self.progress.show()
         self.button.show()
+        self.stop_button.show()
 
     def browse_for_video(self):
         """Open file dialog to select a video"""
@@ -640,7 +717,12 @@ class VideoCompressor(QWidget):
     # -------------------------
     # Compression Start
     # -------------------------
-    def start_compression(self): 
+    def start_compression(self):
+        # The disabled button handles normal clicks; this guard also prevents
+        # queued or programmatic calls from launching a second FFmpeg process.
+        if self.is_compressing:
+            return
+
         if not self.input_file:
             QMessageBox.warning(self, "Error", "No video selected.")      
             return
@@ -729,11 +811,74 @@ class VideoCompressor(QWidget):
         )
 
         self.worker.progress_signal.connect(self.progress.setValue)
-        self.worker.finished_signal.connect(
-            lambda _: QMessageBox.information(self, "Done", "Compression Finished")
-        )
+        self.worker.finished.connect(self.on_compression_finished)
 
+        self.progress.setValue(0)
+        self.set_compression_running(True)
         self.worker.start()
+
+    def set_compression_running(self, is_running):
+        """Keep all conversion-related controls in a consistent state."""
+        self.is_compressing = is_running
+        self.button.setEnabled(not is_running)
+        self.stop_button.setEnabled(is_running)
+        self.stop_button.setText("Stop")
+        self.tabs.setEnabled(not is_running)
+        self.label.setEnabled(not is_running)
+        self.setAcceptDrops(not is_running)
+
+    def stop_compression(self):
+        """Stop the active conversion without blocking the GUI."""
+        if not self.is_compressing or self.worker is None:
+            return
+
+        self.stop_button.setEnabled(False)
+        self.stop_button.setText("Stopping...")
+        self.worker.stop()
+        QTimer.singleShot(3000, self.force_stop_if_needed)
+
+    def force_stop_if_needed(self):
+        """Escalate cancellation if FFmpeg ignored graceful termination."""
+        if self.worker is not None and self.worker.isRunning() and self.is_compressing:
+            self.worker.force_stop()
+
+    def on_compression_finished(self):
+        """Restore the GUI and report how the conversion ended."""
+        worker = self.worker
+        if worker is None:
+            return
+
+        status = worker.result_status
+        message = worker.result_message
+        worker.deleteLater()
+        self.worker = None
+        self.set_compression_running(False)
+
+        if self._closing:
+            return
+
+        if status == "success":
+            QMessageBox.information(self, "Done", "Compression Finished")
+        elif status == "stopped":
+            QMessageBox.information(self, "Stopped", "Compression Stopped")
+        else:
+            QMessageBox.warning(
+                self,
+                "Compression Failed",
+                message or "FFmpeg could not complete the conversion."
+            )
+
+    def closeEvent(self, event):
+        """Ensure FFmpeg cannot continue after the application is closed."""
+        self._closing = True
+
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.stop()
+            if not self.worker.wait(3000):
+                self.worker.force_stop()
+                self.worker.wait()
+
+        event.accept()
 
     # --- NEW: update the Estimated Bitrate field while typing (uses cached duration/audio) ---
     def update_estimated_bitrate(self, _=None):
