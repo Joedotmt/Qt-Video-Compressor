@@ -33,14 +33,44 @@ The application requires FFmpeg to function.
 * **Linux (Ubuntu/Debian):** `sudo apt-get install ffmpeg`
 * **Linux (Arch):** `sudo pacman -S ffmpeg`
 
-## How to build yourself
+## Run from source
 
-1.  **Python 3.x** installed on your system.
-2.  **Install Dependencies:**
-    `
-    pip install PyQt6
-    `
-3. **Boom** just `python main.py`
+Python 3.10 or newer and FFmpeg are required. Keep the project's Python
+packages isolated in a local virtual environment:
+
+### macOS and Linux
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --requirement requirements.txt
+python main.py
+```
+
+### Windows PowerShell
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --requirement requirements.txt
+python main.py
+```
+
+Run `deactivate` when you are finished. The `.venv` directory is local-only
+and intentionally excluded from version control.
+
+## Build a desktop executable
+
+Activate the virtual environment, then install the additional build tooling
+and run the shared PyInstaller specification:
+
+```bash
+python -m pip install --requirement requirements-build.txt
+python -m PyInstaller --noconfirm --clean "Qt Video Compressor.spec"
+```
+
+The generated application is written to `dist/`. The same command is used on
+Windows and Linux; platform packages must be built on their target platform.
 
 ## Automated builds
 

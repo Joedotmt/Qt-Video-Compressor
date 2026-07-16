@@ -1,1 +1,0 @@
-pyinstaller "Qt Video Compressor.spec"

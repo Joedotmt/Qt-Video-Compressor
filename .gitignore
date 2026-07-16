@@ -1,0 +1,21 @@
+# Local Python environments
+.venv/
+venv/
+
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated packages
+build/
+dist/
+*.spec.bak
+
+# Local editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
