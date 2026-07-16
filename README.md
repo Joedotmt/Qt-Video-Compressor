@@ -1,10 +1,10 @@
 <div align="center">
-  <img src="data/icons/io.github.Joedotmt.VideoCompressor.svg" alt="Video Compressor icon" width="128" />
+  <img src="data/icons/io.github.Joedotmt.JoemtVideoCompressor.svg" alt="Joemt Video Compressor icon" width="128" />
 </div>
 
-# Video Compressor
+# Joemt Video Compressor
 
-Video Compressor is a GNOME application for compressing a video to an
+Joemt Video Compressor is a GNOME application for compressing a video to an
 approximate target file size. It is built with Python, GTK 4, libadwaita, and
 FFmpeg.
 
@@ -30,7 +30,7 @@ container and codecs.
 
 Install the x64 Windows setup executable from the project releases. FFmpeg is
 not bundled, which keeps the application download small. If FFmpeg and FFprobe
-are not already installed, Video Compressor offers to install the separate
+are not already installed, Joemt Video Compressor offers to install the separate
 FFmpeg Essentials package through Windows Package Manager.
 
 Windows 10 version 1809 or newer is required.
@@ -66,8 +66,8 @@ Install Flatpak Builder and the GNOME 50 SDK, then build the included manifest:
 sudo apt install flatpak flatpak-builder
 flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
 flatpak install flathub org.gnome.Platform//50 org.gnome.Sdk//50
-flatpak-builder --user --install --force-clean build-dir io.github.Joedotmt.VideoCompressor.yml
-flatpak run io.github.Joedotmt.VideoCompressor
+flatpak-builder --user --install --force-clean build-dir io.github.Joedotmt.JoemtVideoCompressor.yml
+flatpak run io.github.Joedotmt.JoemtVideoCompressor
 ```
 
 The Flatpak uses file chooser portals, so it does not request unrestricted home
@@ -117,7 +117,7 @@ application.
   parsing, and cancellable FFmpeg execution without GUI dependencies.
 - `data/` contains freedesktop desktop metadata, AppStream metadata, and icons.
 - `packaging/windows/` contains the PyInstaller and Inno Setup build files.
-- `io.github.Joedotmt.VideoCompressor.yml` builds the Flatpak package.
+- `io.github.Joedotmt.JoemtVideoCompressor.yml` builds the Flatpak package.
 
 ## Platform support
 

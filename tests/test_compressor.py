@@ -144,6 +144,35 @@ class ToolchainTests(unittest.TestCase):
             ),
         )
 
+    def test_windows_registry_path_is_searched_when_process_path_is_stale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            current_path = str(Path(directory, "current-path"))
+            executables = {
+                "ffmpeg": str(Path(current_path, "ffmpeg.exe")),
+                "ffprobe": str(Path(current_path, "ffprobe.exe")),
+            }
+
+            def find_executable(name, *, path=None):
+                return executables.get(name) if path == current_path else None
+
+            with mock.patch("compressor._IS_WINDOWS", True), mock.patch(
+                "compressor._windows_registered_search_path",
+                return_value=current_path,
+            ), mock.patch(
+                "compressor.shutil.which", side_effect=find_executable
+            ), mock.patch(
+                "compressor.subprocess.run", side_effect=self.successful_run
+            ):
+                toolchain = resolve_ffmpeg_toolchain()
+
+        self.assertEqual(
+            toolchain,
+            FFmpegToolchain(
+                str(Path(executables["ffmpeg"]).resolve()),
+                str(Path(executables["ffprobe"]).resolve()),
+            ),
+        )
+
 
 class PlanningTests(unittest.TestCase):
     def setUp(self):

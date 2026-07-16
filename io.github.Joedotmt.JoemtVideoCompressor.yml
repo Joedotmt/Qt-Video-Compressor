@@ -1,0 +1,30 @@
+app-id: io.github.Joedotmt.JoemtVideoCompressor
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: joemt-video-compressor
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+modules:
+  - name: joemt-video-compressor
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 packaging/linux/joemt-video-compressor /app/bin/joemt-video-compressor
+      - install -Dm644 main.py /app/share/joemt-video-compressor/main.py
+      - install -Dm644 compressor.py /app/share/joemt-video-compressor/compressor.py
+      - install -Dm644 data/io.github.Joedotmt.JoemtVideoCompressor.desktop /app/share/applications/io.github.Joedotmt.JoemtVideoCompressor.desktop
+      - install -Dm644 data/io.github.Joedotmt.JoemtVideoCompressor.metainfo.xml /app/share/metainfo/io.github.Joedotmt.JoemtVideoCompressor.metainfo.xml
+      - install -Dm644 data/icons/io.github.Joedotmt.JoemtVideoCompressor.svg /app/share/icons/hicolor/scalable/apps/io.github.Joedotmt.JoemtVideoCompressor.svg
+      - install -Dm644 data/icons/io.github.Joedotmt.JoemtVideoCompressor-symbolic.svg /app/share/icons/hicolor/symbolic/apps/io.github.Joedotmt.JoemtVideoCompressor-symbolic.svg
+    sources:
+      - type: dir
+        path: .
+        skip:
+          - .git
+          - .venv
+          - .flatpak-builder
+          - build-dir
+          - __pycache__
+          - '*.pyc'

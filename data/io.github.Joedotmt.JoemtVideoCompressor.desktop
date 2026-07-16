@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Video Compressor
-GenericName=Video Compressor
+Name=Joemt Video Compressor
+GenericName=Joemt Video Compressor
 Comment=Compress videos to a target file size
-Exec=video-compressor %f
-Icon=io.github.Joedotmt.VideoCompressor
+Exec=joemt-video-compressor %f
+Icon=io.github.Joedotmt.JoemtVideoCompressor
 Terminal=false
 Categories=AudioVideo;Video;
 Keywords=video;compress;ffmpeg;size;

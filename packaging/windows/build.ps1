@@ -9,11 +9,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$specPath = Join-Path $PSScriptRoot "video-compressor.spec"
-$installerScript = Join-Path $PSScriptRoot "video-compressor.iss"
+$specPath = Join-Path $PSScriptRoot "joemt-video-compressor.spec"
+$installerScript = Join-Path $PSScriptRoot "joemt-video-compressor.iss"
 $distRoot = Join-Path $repoRoot "dist\windows"
 $workRoot = Join-Path $repoRoot "build\windows"
-$appDir = Join-Path $distRoot "VideoCompressor"
+$appDir = Join-Path $distRoot "JoemtVideoCompressor"
 $installerDir = Join-Path $distRoot "installer"
 
 function Find-UcrtPython {
@@ -104,7 +104,7 @@ try {
         throw "PyInstaller failed with exit code $LASTEXITCODE."
     }
 
-    $appExecutable = Join-Path $appDir "VideoCompressor.exe"
+    $appExecutable = Join-Path $appDir "JoemtVideoCompressor.exe"
     if (-not (Test-Path -LiteralPath $appExecutable)) {
         throw "PyInstaller did not create '$appExecutable'."
     }
@@ -127,7 +127,7 @@ try {
         throw "Inno Setup failed with exit code $LASTEXITCODE."
     }
 
-    $installerPath = Join-Path $installerDir "VideoCompressor-$appVersion-windows-x64.exe"
+    $installerPath = Join-Path $installerDir "JoemtVideoCompressor-$appVersion-windows-x64.exe"
     if (-not (Test-Path -LiteralPath $installerPath)) {
         throw "Inno Setup did not create '$installerPath'."
     }

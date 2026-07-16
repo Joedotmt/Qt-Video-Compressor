@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GTK 4 and libadwaita interface for Video Compressor."""
+"""GTK 4 and libadwaita interface for Joemt Video Compressor."""
 
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ from compressor import (  # noqa: E402
 )
 
 
-APPLICATION_ID = "io.github.Joedotmt.VideoCompressor"
-APPLICATION_NAME = "Video Compressor"
+APPLICATION_ID = "io.github.Joedotmt.JoemtVideoCompressor"
+APPLICATION_NAME = "Joemt Video Compressor"
 VERSION = "2.0.0"
 
 CODEC_OPTIONS = list(VIDEO_CODECS.items())
@@ -85,8 +85,8 @@ def icon_button(icon_name: str, tooltip: str, action_name: str | None = None) ->
     return button
 
 
-class VideoCompressorWindow(Adw.ApplicationWindow):
-    def __init__(self, application: "VideoCompressorApplication") -> None:
+class JoemtVideoCompressorWindow(Adw.ApplicationWindow):
+    def __init__(self, application: "JoemtVideoCompressorApplication") -> None:
         super().__init__(application=application)
         self.set_title(APPLICATION_NAME)
         self.set_default_size(720, 760)
@@ -124,7 +124,7 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
         header.pack_start(self.open_header_button)
 
         menu = Gio.Menu.new()
-        menu.append("About Video Compressor", "app.about")
+        menu.append(f"About {APPLICATION_NAME}", "app.about")
         menu.append("Quit", "app.quit")
         menu_button = Gtk.MenuButton.new()
         menu_button.set_icon_name("open-menu-symbolic")
@@ -407,7 +407,7 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
 
         dialog = Adw.AlertDialog.new(
             "Install FFmpeg?",
-            "Video Compressor can install the FFmpeg Essentials Build using "
+            f"{APPLICATION_NAME} can install the FFmpeg Essentials Build using "
             "Windows Package Manager. FFmpeg is a separate GPLv3 package.",
         )
         dialog.add_response("cancel", "Not Now")
@@ -512,7 +512,7 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
         if "winget) is not available" in error:
             advice = (
                 "Install or update Microsoft App Installer, or install FFmpeg manually "
-                "and restart Video Compressor."
+                f"and restart {APPLICATION_NAME}."
             )
         else:
             advice = (
@@ -953,7 +953,7 @@ class VideoCompressorWindow(Adw.ApplicationWindow):
             self._cancel_compression()
 
 
-class VideoCompressorApplication(Adw.Application):
+class JoemtVideoCompressorApplication(Adw.Application):
     def __init__(self) -> None:
         super().__init__(
             application_id=APPLICATION_ID,
@@ -982,13 +982,13 @@ class VideoCompressorApplication(Adw.Application):
     def do_activate(self) -> None:
         window = self.props.active_window
         if window is None:
-            window = VideoCompressorWindow(self)
+            window = JoemtVideoCompressorWindow(self)
         window.present()
 
     def do_open(self, files: list[Gio.File], _n_files: int, _hint: str) -> None:
         self.activate()
         window = self.props.active_window
-        if isinstance(window, VideoCompressorWindow) and files:
+        if isinstance(window, JoemtVideoCompressorWindow) and files:
             path = files[0].get_path()
             if path:
                 window.load_file(path)
@@ -996,7 +996,7 @@ class VideoCompressorApplication(Adw.Application):
     def _open_action(self, _action: Gio.SimpleAction, _parameter: object) -> None:
         self.activate()
         window = self.props.active_window
-        if isinstance(window, VideoCompressorWindow):
+        if isinstance(window, JoemtVideoCompressorWindow):
             window.open_file_dialog()
 
     def _about_action(self, _action: Gio.SimpleAction, _parameter: object) -> None:
@@ -1027,7 +1027,7 @@ def main(argv: list[str] | None = None) -> int:
     smoke_test = "--smoke-test" in arguments
     if smoke_test:
         arguments.remove("--smoke-test")
-    application = VideoCompressorApplication()
+    application = JoemtVideoCompressorApplication()
     if smoke_test:
         GLib.timeout_add(1500, lambda: application.quit() or GLib.SOURCE_REMOVE)
     return application.run(arguments)

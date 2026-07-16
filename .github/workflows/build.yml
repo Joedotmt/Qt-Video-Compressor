@@ -1,4 +1,4 @@
-name: Build Video Compressor
+name: Build Joemt Video Compressor
 
 on:
   push:
@@ -41,8 +41,8 @@ jobs:
 
       - name: Validate desktop metadata
         run: |
-          desktop-file-validate data/io.github.Joedotmt.VideoCompressor.desktop
-          appstreamcli validate --no-net data/io.github.Joedotmt.VideoCompressor.metainfo.xml
+          desktop-file-validate data/io.github.Joedotmt.JoemtVideoCompressor.desktop
+          appstreamcli validate --no-net data/io.github.Joedotmt.JoemtVideoCompressor.metainfo.xml
 
       - name: Check advertised FFmpeg encoders
         run: |
@@ -63,9 +63,9 @@ jobs:
       - name: Build Flatpak bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          bundle: VideoCompressor.flatpak
-          manifest-path: io.github.Joedotmt.VideoCompressor.yml
-          artifact-name: VideoCompressor-${{ runner.arch }}.flatpak
+          bundle: JoemtVideoCompressor.flatpak
+          manifest-path: io.github.Joedotmt.JoemtVideoCompressor.yml
+          artifact-name: JoemtVideoCompressor-${{ runner.arch }}.flatpak
           cache-key: flatpak-builder-${{ github.sha }}
 
   windows:
@@ -101,12 +101,12 @@ jobs:
       - name: Smoke test packaged application
         shell: pwsh
         timeout-minutes: 1
-        run: .\dist\windows\VideoCompressor\VideoCompressor.exe --smoke-test
+        run: .\dist\windows\JoemtVideoCompressor\JoemtVideoCompressor.exe --smoke-test
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: VideoCompressor-windows-x64
+          name: JoemtVideoCompressor-windows-x64
           path: |
             dist/windows/installer/*.exe
             dist/windows/installer/*.sha256

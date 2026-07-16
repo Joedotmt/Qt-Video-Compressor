@@ -7,7 +7,7 @@ import tempfile
 from gi.repository import GLib
 
 from compressor import probe_source
-from main import VideoCompressorApplication, VideoCompressorWindow
+from main import JoemtVideoCompressorApplication, JoemtVideoCompressorWindow
 
 
 temporary_directory = tempfile.TemporaryDirectory()
@@ -39,14 +39,14 @@ subprocess.run(
     check=True,
 )
 
-application = VideoCompressorApplication()
+application = JoemtVideoCompressorApplication()
 state = {"started": False, "exit_code": 1, "ticks": 0}
 
 
 def exercise_window() -> bool:
     state["ticks"] += 1
     window = application.props.active_window
-    if not isinstance(window, VideoCompressorWindow):
+    if not isinstance(window, JoemtVideoCompressorWindow):
         return GLib.SOURCE_CONTINUE
     if window.source is None:
         if state["ticks"] == 1:
@@ -78,6 +78,6 @@ def fail_on_timeout() -> bool:
 
 GLib.timeout_add(100, exercise_window)
 GLib.timeout_add_seconds(20, fail_on_timeout)
-run_status = application.run(["video-compressor"])
+run_status = application.run(["joemt-video-compressor"])
 temporary_directory.cleanup()
 raise SystemExit(run_status or state["exit_code"])

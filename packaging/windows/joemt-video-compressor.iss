@@ -2,8 +2,8 @@
   #define AppVersion "0.0.0"
 #endif
 
-#define AppName "Video Compressor"
-#define AppExeName "VideoCompressor.exe"
+#define AppName "Joemt Video Compressor"
+#define AppExeName "JoemtVideoCompressor.exe"
 #define AppUrl "https://github.com/Joedotmt/Qt-Video-Compressor"
 
 [Setup]
@@ -15,16 +15,16 @@ AppPublisher=Joe
 AppPublisherURL={#AppUrl}
 AppSupportURL={#AppUrl}/issues
 AppUpdatesURL={#AppUrl}/releases
-DefaultDirName={localappdata}\Programs\Video Compressor
+DefaultDirName={localappdata}\Programs\Joemt Video Compressor
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
-SourceDir=..\..\dist\windows\VideoCompressor
+SourceDir=..\..\dist\windows\JoemtVideoCompressor
 OutputDir=..\installer
-OutputBaseFilename=VideoCompressor-{#AppVersion}-windows-x64
+OutputBaseFilename=JoemtVideoCompressor-{#AppVersion}-windows-x64
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

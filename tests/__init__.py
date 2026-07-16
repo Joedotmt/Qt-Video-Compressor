@@ -1,1 +1,1 @@
-"""Tests for Video Compressor."""
+"""Tests for Joemt Video Compressor."""

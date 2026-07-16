@@ -13,11 +13,11 @@ analysis = Analysis(
     binaries=[],
     datas=[
         (
-            str(APP_ICON_DIR / "io.github.Joedotmt.VideoCompressor.svg"),
+            str(APP_ICON_DIR / "io.github.Joedotmt.JoemtVideoCompressor.svg"),
             "share/icons/hicolor/scalable/apps",
         ),
         (
-            str(APP_ICON_DIR / "io.github.Joedotmt.VideoCompressor-symbolic.svg"),
+            str(APP_ICON_DIR / "io.github.Joedotmt.JoemtVideoCompressor-symbolic.svg"),
             "share/icons/hicolor/symbolic/apps",
         ),
     ],
@@ -71,7 +71,7 @@ executable = EXE(
     analysis.scripts,
     [],
     exclude_binaries=True,
-    name="VideoCompressor",
+    name="JoemtVideoCompressor",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -85,5 +85,5 @@ bundle = COLLECT(
     analysis.datas,
     strip=False,
     upx=False,
-    name="VideoCompressor",
+    name="JoemtVideoCompressor",
 )

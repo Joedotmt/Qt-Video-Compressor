@@ -2,9 +2,9 @@
 
 from gi.repository import GLib
 
-from main import VideoCompressorApplication
+from main import JoemtVideoCompressorApplication
 
 
-application = VideoCompressorApplication()
+application = JoemtVideoCompressorApplication()
 GLib.timeout_add(1500, lambda: application.quit() or GLib.SOURCE_REMOVE)
-raise SystemExit(application.run(["video-compressor"]))
+raise SystemExit(application.run(["joemt-video-compressor"]))
