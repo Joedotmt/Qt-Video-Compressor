@@ -11,7 +11,10 @@ __pycache__/
 
 # Generated packages
 build/
+build-dir/
 dist/
+.flatpak-builder/
+*.flatpak
 *.spec.bak
 
 # Local editor and OS files

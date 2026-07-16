@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.Joedotmt.VideoCompressor</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>Video Compressor</name>
+  <summary>Compress videos to a target file size</summary>
+  <description>
+    <p>
+      Video Compressor makes videos small enough to share by calculating the
+      video bitrate from a target file size.
+    </p>
+    <p>
+      Adjust the output dimensions, frame rate, audio, playback speed, codec,
+      encoding preset, and tuning profile when needed.
+    </p>
+  </description>
+  <developer id="io.github.joedotmt">
+    <name>Joe</name>
+  </developer>
+  <launchable type="desktop-id">io.github.Joedotmt.VideoCompressor.desktop</launchable>
+  <provides>
+    <binary>video-compressor</binary>
+  </provides>
+  <url type="homepage">https://github.com/Joedotmt/Qt-Video-Compressor</url>
+  <url type="bugtracker">https://github.com/Joedotmt/Qt-Video-Compressor/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="2.0.0" date="2026-07-16">
+      <description>
+        <p>Rebuilt with GTK 4 and libadwaita for native GNOME integration.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Video Compressor
+GenericName=Video Compressor
+Comment=Compress videos to a target file size
+Exec=video-compressor %f
+Icon=io.github.Joedotmt.VideoCompressor
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=video;compress;ffmpeg;size;
+StartupNotify=true
+MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;video/x-msvideo;

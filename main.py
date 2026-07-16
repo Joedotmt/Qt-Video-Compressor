@@ -1,995 +1,884 @@
+#!/usr/bin/env python3
+"""GTK 4 and libadwaita interface for Video Compressor."""
+
+from __future__ import annotations
+
+from pathlib import Path
 import sys
-import os
-import subprocess
-import re
 import threading
-from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QLineEdit, QProgressBar, QFileDialog,
-    QMessageBox, QCheckBox, QTabWidget
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+gi.require_version("Gdk", "4.0")
+
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+
+from compressor import (  # noqa: E402
+    DEFAULT_AUDIO_BITRATE_KBPS,
+    FFmpegRunner,
+    SourceInfo,
+    VIDEO_CODECS,
+    ValidationError,
+    calculate_video_bitrate,
+    check_ffmpeg_installed,
+    ensure_even,
+    evaluate_expression,
+    make_job,
+    probe_source,
 )
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-
-AUDIO_BITRATE = 128_000  # 128 kbps
-
-# Windows-specific: suppress console windows
-SUBPROCESS_FLAGS = 0
-
-if sys.platform == "win32":
-    SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW
 
 
-# Helper function to check if FFmpeg is installed
-def check_ffmpeg_installed():
-    """Check if FFmpeg and FFprobe are installed"""
-    try:
-        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, creationflags=SUBPROCESS_FLAGS)
-        subprocess.run(["ffprobe", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, creationflags=SUBPROCESS_FLAGS)
-        return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+APPLICATION_ID = "io.github.Joedotmt.VideoCompressor"
+APPLICATION_NAME = "Video Compressor"
+VERSION = "2.0.0"
+
+CODEC_OPTIONS = list(VIDEO_CODECS.items())
+H26X_PRESETS = [
+    ("Very Fast", "ultrafast"),
+    ("Fast", "fast"),
+    ("Balanced", "medium"),
+    ("Slow", "slow"),
+]
+AV1_PRESETS = [
+    ("Highest Quality", "0"),
+    ("Very High Quality", "1"),
+    ("High Quality", "2"),
+    ("Quality", "3"),
+    ("Balanced", "4"),
+    ("Fast", "5"),
+    ("Fastest", "6"),
+]
+TUNE_OPTIONS: list[tuple[str, str | None]] = [
+    ("None", None),
+    ("Film", "film"),
+    ("Animation", "animation"),
+    ("Grain", "grain"),
+    ("Still Image", "stillimage"),
+]
 
 
-def show_ffmpeg_installation_dialog():
-    """Show OS-specific installation instructions for FFmpeg"""
-    if sys.platform == "win32":
-        message = (
-            "FFmpeg is not installed on your system or not included in PATH.\n\n"
-            "Please install FFmpeg using one of these methods:\n\n"
-            "  • Recommended: winget install FFmpeg\n"
-            "  • Using Chocolatey: choco install ffmpeg\n"
-            "  • Manual download: https://ffmpeg.org/download.html\n\n"
-            "After installation, please restart this application."
+def format_decimal(value: float, places: int = 2) -> str:
+    return f"{value:.{places}f}".rstrip("0").rstrip(".")
+
+
+def format_duration(seconds: float) -> str:
+    rounded = max(0, round(seconds))
+    hours, remainder = divmod(rounded, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def icon_button(icon_name: str, tooltip: str, action_name: str | None = None) -> Gtk.Button:
+    button = Gtk.Button.new_from_icon_name(icon_name)
+    button.set_tooltip_text(tooltip)
+    button.update_property([Gtk.AccessibleProperty.LABEL], [tooltip])
+    if action_name:
+        button.set_action_name(action_name)
+    return button
+
+
+class VideoCompressorWindow(Adw.ApplicationWindow):
+    def __init__(self, application: "VideoCompressorApplication") -> None:
+        super().__init__(application=application)
+        self.set_title(APPLICATION_NAME)
+        self.set_default_size(720, 760)
+
+        self.source: SourceInfo | None = None
+        self._probe_generation = 0
+        self._pending_file: str | None = None
+        self._ffmpeg_state = "checking"
+        self._runner: FFmpegRunner | None = None
+        self._worker_thread: threading.Thread | None = None
+        self._close_dialog: Adw.AlertDialog | None = None
+        self._close_when_finished = False
+        self._updating_form = False
+        self._form_valid = False
+
+        self._build_interface()
+        self.connect("close-request", self._on_close_request)
+        self._check_requirements()
+
+    def _build_interface(self) -> None:
+        self.toolbar_view = Adw.ToolbarView.new()
+        self.set_content(self.toolbar_view)
+
+        header = Adw.HeaderBar.new()
+        self.window_title = Adw.WindowTitle.new(APPLICATION_NAME, "")
+        header.set_title_widget(self.window_title)
+
+        self.open_header_button = icon_button(
+            "document-open-symbolic", "Open Video", "app.open"
         )
-    elif sys.platform == "darwin":  # macOS
-        message = (
-            "FFmpeg is not installed on your system.\n\n"
-            "Please install FFmpeg using Homebrew:\n\n"
-            "  • brew install ffmpeg\n\n"
-            "If you don't have Homebrew installed, visit: https://brew.sh\n\n"
-            "After installation, please restart this application."
-        )
-    else:  # Linux and other Unix-like systems
-        message = (
-            "FFmpeg is not installed on your system.\n\n"
-            "Please install FFmpeg using your package manager:\n\n"
-            "Ubuntu/Debian:\n"
-            "  • sudo apt-get install ffmpeg\n\n"
-            "Fedora/RHEL:\n"
-            "  • sudo dnf install ffmpeg\n\n"
-            "Arch:\n"
-            "  • sudo pacman -S ffmpeg\n\n"
-            "After installation, please restart this application."
-        )
-    QMessageBox.critical(None, "FFmpeg Not Found", message)
+        self.open_header_button.set_sensitive(False)
+        header.pack_start(self.open_header_button)
 
+        menu = Gio.Menu.new()
+        menu.append("About Video Compressor", "app.about")
+        menu.append("Quit", "app.quit")
+        menu_button = Gtk.MenuButton.new()
+        menu_button.set_icon_name("open-menu-symbolic")
+        menu_button.set_tooltip_text("Main Menu")
+        menu_button.update_property([Gtk.AccessibleProperty.LABEL], ["Main Menu"])
+        menu_button.set_menu_model(menu)
+        header.pack_end(menu_button)
+        self.toolbar_view.add_top_bar(header)
 
-def safe_eval_expression(expr_str):
-    """Safely evaluate mathematical expressions like '720/2' or '1920-100'"""
-    try:
-        expr_str = str(expr_str).strip()
-        if not expr_str:
-            return None
-        # Only allow digits, basic operators, and parentheses
-        if not all(c in '0123456789+-*/.() ' for c in expr_str):
-            return None
-        result = eval(expr_str)
-        return result
-    except:
-        return None
+        self.toast_overlay = Adw.ToastOverlay.new()
+        self.toolbar_view.set_content(self.toast_overlay)
 
+        self.page_stack = Gtk.Stack.new()
+        self.page_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.toast_overlay.set_child(self.page_stack)
 
-def ensure_even(value):
-    """Round down to nearest even number (required by libx264)"""
-    if value is None:
-        return None
-    try:
-        val = int(value)
-        return val if val % 2 == 0 else val - 1
-    except:
-        return None
+        self.status_page = Adw.StatusPage.new()
+        self.page_stack.add_named(self.status_page, "status")
 
+        self.status_spinner = Gtk.Spinner.new()
+        self.status_spinner.start()
+        self.status_page.set_icon_name("system-run-symbolic")
+        self.status_page.set_title("Checking Requirements")
+        self.status_page.set_description("Looking for FFmpeg and FFprobe…")
+        self.status_page.set_child(self.status_spinner)
 
-# -----------------------------
-# Worker Thread
-# -----------------------------
-class FFmpegCheckWorker(QThread):
-    check_complete = pyqtSignal(bool)
+        self.open_status_button = Gtk.Button.new_with_mnemonic("_Open Video…")
+        self.open_status_button.add_css_class("suggested-action")
+        self.open_status_button.add_css_class("pill")
+        self.open_status_button.set_action_name("app.open")
 
-    def run(self):
-        result = check_ffmpeg_installed()
-        self.check_complete.emit(result)
+        self.editor = self._build_editor()
+        self.page_stack.add_named(self.editor, "editor")
+        self.page_stack.set_visible_child_name("status")
 
+        self.bottom_bar = self._build_bottom_bar()
+        self.bottom_bar.set_visible(False)
+        self.toolbar_view.add_bottom_bar(self.bottom_bar)
 
-class FFmpegWorker(QThread):
-    progress_signal = pyqtSignal(int)
+        drop_target = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+        drop_target.connect("drop", self._on_drop)
+        self.add_controller(drop_target)
 
-    def __init__(self, input_file, output_file, video_bitrate,
-             resolution, fps, preset, duration, audio_bitrate=128_000, mute_audio=False,
-             tune=None, speed=1.0, codec="libx264"):
-        super().__init__()
-        self.input_file = input_file
-        self.output_file = output_file
-        self.video_bitrate = video_bitrate
-        self.resolution = resolution
-        self.fps = fps
-        self.preset = preset
-        self.duration = duration
-        self.audio_bitrate = audio_bitrate
-        self.mute_audio = mute_audio
-        self.tune = tune
-        self.speed = speed
-        self.codec = codec
-        self.result_status = "pending"
-        self.result_message = ""
-        self._stop_requested = threading.Event()
-        self._process = None
-        self._process_lock = threading.Lock()
+    def _build_editor(self) -> Gtk.ScrolledWindow:
+        scroller = Gtk.ScrolledWindow.new()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_vexpand(True)
 
-    def stop(self):
-        """Request cancellation and terminate FFmpeg if it is running."""
-        self._stop_requested.set()
-        with self._process_lock:
-            process = self._process
+        clamp = Adw.Clamp.new()
+        clamp.set_maximum_size(680)
+        clamp.set_tightening_threshold(500)
+        scroller.set_child(clamp)
 
-        if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-            except OSError:
-                pass
+        self.settings_box = Gtk.Box.new(Gtk.Orientation.VERTICAL, 18)
+        self.settings_box.set_margin_top(24)
+        self.settings_box.set_margin_bottom(24)
+        self.settings_box.set_margin_start(18)
+        self.settings_box.set_margin_end(18)
+        clamp.set_child(self.settings_box)
 
-    def force_stop(self):
-        """Forcefully stop FFmpeg if graceful termination did not finish."""
-        self._stop_requested.set()
-        with self._process_lock:
-            process = self._process
+        input_group = Adw.PreferencesGroup.new()
+        input_group.set_title("Input Video")
+        self.source_row = Adw.ActionRow.new()
+        self.source_row.set_title("No video selected")
+        source_icon = Gtk.Image.new_from_icon_name("video-x-generic-symbolic")
+        self.source_row.add_prefix(source_icon)
+        choose_button = icon_button("document-open-symbolic", "Choose Another Video", "app.open")
+        choose_button.add_css_class("flat")
+        self.source_row.add_suffix(choose_button)
+        input_group.add(self.source_row)
+        self.settings_box.append(input_group)
 
-        if process is not None and process.poll() is None:
-            try:
-                process.kill()
-            except OSError:
-                pass
+        output_group = Adw.PreferencesGroup.new()
+        output_group.set_title("Output")
+        output_group.set_description("Choose the approximate maximum size of the compressed file.")
+        source_size_button = Gtk.Button.new_with_label("Reset")
+        source_size_button.set_tooltip_text("Use Source Size")
+        source_size_button.add_css_class("flat")
+        source_size_button.connect("clicked", self._use_source_size)
+        output_group.set_header_suffix(source_size_button)
 
-    def run(self):
-        vf_filters = []
+        self.target_size_row = self._entry_row("Target Size", "MB")
+        self.estimated_bitrate_row = Adw.ActionRow.new()
+        self.estimated_bitrate_row.set_title("Estimated Video Bitrate")
+        self.estimated_bitrate_row.set_subtitle("—")
+        self.estimated_bitrate_row.add_css_class("property")
+        output_group.add(self.target_size_row)
+        output_group.add(self.estimated_bitrate_row)
+        self.settings_box.append(output_group)
 
-        if self.resolution != "match":
-            vf_filters.append(f"scale={self.resolution}")
+        video_group = Adw.PreferencesGroup.new()
+        video_group.set_title("Video")
+        source_video_button = Gtk.Button.new_with_label("Reset")
+        source_video_button.set_tooltip_text("Use Source Video Settings")
+        source_video_button.add_css_class("flat")
+        source_video_button.connect("clicked", self._use_source_video_settings)
+        video_group.set_header_suffix(source_video_button)
 
-        if self.fps != "match":
-            vf_filters.append(f"fps={self.fps}")
+        self.width_row = self._entry_row("Width", "px")
+        self.height_row = self._entry_row("Height", "px")
+        self.fps_row = self._entry_row("Frame Rate", "fps")
+        self.video_preview_row = Adw.ActionRow.new()
+        self.video_preview_row.set_title("Output Video")
+        self.video_preview_row.set_subtitle("—")
+        self.video_preview_row.add_css_class("property")
+        for row in (self.width_row, self.height_row, self.fps_row, self.video_preview_row):
+            video_group.add(row)
+        self.settings_box.append(video_group)
 
-        # Add speed control via setpts filter
-        if self.speed != 1.0:
-            vf_filters.append(f"setpts=PTS/{self.speed}")
+        audio_group = Adw.PreferencesGroup.new()
+        audio_group.set_title("Audio")
+        source_audio_button = Gtk.Button.new_with_label("Reset")
+        source_audio_button.set_tooltip_text("Use Source Audio Bitrate")
+        source_audio_button.add_css_class("flat")
+        source_audio_button.connect("clicked", self._use_source_audio_bitrate)
+        audio_group.set_header_suffix(source_audio_button)
 
-        vf_string = ",".join(vf_filters) if vf_filters else None
+        self.include_audio_row = Adw.SwitchRow.new()
+        self.include_audio_row.set_title("Audio")
+        self.include_audio_row.set_subtitle("Include audio in the compressed video")
+        self.include_audio_row.set_active(True)
+        self.audio_bitrate_row = self._entry_row("Audio Bitrate", "kbps")
+        audio_group.add(self.include_audio_row)
+        audio_group.add(self.audio_bitrate_row)
+        self.settings_box.append(audio_group)
 
-        # Audio filter for speed control
-        af_filters = []
-        if self.speed != 1.0 and not self.mute_audio:
-            af_filters.append(f"atempo={self.speed}")
-        af_string = ",".join(af_filters) if af_filters else None
+        advanced_group = Adw.PreferencesGroup.new()
+        self.advanced_row = Adw.ExpanderRow.new()
+        self.advanced_row.set_title("Advanced Options")
+        self.advanced_row.set_subtitle("Codec, encoding speed, tuning, and playback speed")
 
-        command = [
-            "ffmpeg",
-            "-y",
-            "-i", self.input_file,
-            "-c:v", self.codec,
-            "-preset", self.preset,
-            "-b:v", str(self.video_bitrate),
-        ]
+        self.codec_row = self._combo_row("Codec", [label for label, _ in CODEC_OPTIONS])
+        self.preset_row = self._combo_row("Encoding Preset", [])
+        self.tune_row = self._combo_row("Tune For", [])
+        self.speed_row = self._entry_row("Playback Speed", "×")
+        self.speed_row.set_text("1")
+        for row in (self.codec_row, self.preset_row, self.tune_row, self.speed_row):
+            self.advanced_row.add_row(row)
+        advanced_group.add(self.advanced_row)
+        self.settings_box.append(advanced_group)
 
-        if self.tune and self.codec != "libaom-av1":  # AV1 doesn't use -tune
-            command.extend(["-tune", self.tune])
+        for row in (
+            self.target_size_row,
+            self.width_row,
+            self.height_row,
+            self.fps_row,
+            self.audio_bitrate_row,
+            self.speed_row,
+        ):
+            row.connect("changed", self._on_form_changed)
+        self.include_audio_row.connect("notify::active", self._on_audio_changed)
+        self.codec_row.connect("notify::selected", self._on_codec_changed)
 
-        if self.mute_audio:
-            command.extend(["-an"])
-        else:
-            command.extend(["-c:a", "aac", "-b:a", str(self.audio_bitrate)])
+        self._configure_encoder_rows()
+        return scroller
 
-        if vf_string:
-            command.extend(["-vf", vf_string])
+    def _build_bottom_bar(self) -> Gtk.Box:
+        container = Gtk.Box.new(Gtk.Orientation.VERTICAL, 8)
+        container.set_margin_top(10)
+        container.set_margin_bottom(10)
+        container.set_margin_start(12)
+        container.set_margin_end(12)
 
-        if af_string:
-            command.extend(["-af", af_string])
+        self.progress_bar = Gtk.ProgressBar.new()
+        self.progress_bar.set_show_text(True)
+        self.progress_bar.set_text("0%")
+        self.progress_bar.set_visible(False)
+        container.append(self.progress_bar)
 
-        command.append(self.output_file)
+        actions = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 8)
+        actions.set_halign(Gtk.Align.END)
+        self.compress_button = Gtk.Button.new_with_mnemonic("_Compress")
+        self.compress_button.add_css_class("suggested-action")
+        self.compress_button.add_css_class("pill")
+        self.compress_button.connect("clicked", self._choose_output)
+        actions.append(self.compress_button)
 
-        # Print the command for debugging
-        print("FFmpeg Command:")
-        print(" ".join(command))
-        print()
-
-        process = None
-        error_lines = []
-
-        try:
-            # Holding the lock while starting the process closes the race where a
-            # stop request could arrive between the initial check and Popen.
-            with self._process_lock:
-                if self._stop_requested.is_set():
-                    self.result_status = "stopped"
-                    return
-
-                process = subprocess.Popen(
-                    command,
-                    stderr=subprocess.PIPE,
-                    universal_newlines=True,
-                    creationflags=SUBPROCESS_FLAGS
-                )
-                self._process = process
-
-            # Adjust duration for speed when calculating progress
-            adjusted_duration = self.duration / self.speed
-
-            for line in process.stderr:
-                stripped_line = line.strip()
-                if stripped_line:
-                    error_lines.append(stripped_line)
-                    error_lines = error_lines[-10:]
-
-                if "time=" in line:
-                    time_match = re.search(r"time=(\d+:\d+:\d+\.\d+)", line)
-                    if time_match:
-                        seconds = self.time_to_seconds(time_match.group(1))
-                        percent = int((seconds / adjusted_duration) * 100)
-                        self.progress_signal.emit(min(percent, 100))
-
-            return_code = process.wait()
-
-            if self._stop_requested.is_set():
-                self.result_status = "stopped"
-            elif return_code == 0:
-                self.result_status = "success"
-                self.progress_signal.emit(100)
-            else:
-                self.result_status = "failed"
-                detail = error_lines[-1] if error_lines else "No error details were provided."
-                self.result_message = f"FFmpeg exited with code {return_code}.\n\n{detail}"
-        except Exception as error:
-            if self._stop_requested.is_set():
-                self.result_status = "stopped"
-            else:
-                self.result_status = "failed"
-                self.result_message = str(error)
-        finally:
-            with self._process_lock:
-                self._process = None
-
-    def time_to_seconds(self, time_str):
-        h, m, s = time_str.split(":")
-        return int(h) * 3600 + int(m) * 60 + float(s)
-
-# -----------------------------
-# GUI
-# -----------------------------
-class VideoCompressor(QWidget):
-    @staticmethod
-    def get_duration(input_file):
-        command = [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", input_file
-        ]
-        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS, timeout=10)
-        try:
-            return float(result.stdout)
-        except:
-            return 10.0 # fallback
-
-    @staticmethod
-    def get_source_audio_bitrate(input_file):
-        """Extract audio bitrate from source video"""
-        command = [
-            "ffprobe", "-v", "error", "-select_streams", "a:0",
-            "-show_entries", "stream=bit_rate",
-            "-of", "default=noprint_wrappers=1:nokey=1", input_file
-        ]
-        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS, timeout=10)
-        try:
-            bitrate = int(result.stdout.strip())
-            return bitrate // 1000  # Convert to kbps
-        except:
-            return 128  # fallback
+        self.cancel_button = Gtk.Button.new_with_mnemonic("_Cancel Compression")
+        self.cancel_button.add_css_class("pill")
+        self.cancel_button.set_visible(False)
+        self.cancel_button.connect("clicked", self._cancel_compression)
+        actions.append(self.cancel_button)
+        container.append(actions)
+        return container
 
     @staticmethod
-    def get_source_file_size(input_file):
-        """Get source file size in MB"""
-        try:
-            file_size_bytes = os.path.getsize(input_file)
-            file_size_mb = file_size_bytes / (1024 * 1024)
-            return file_size_mb
-        except:
-            return None
-
-    def __init__(self):
-        super().__init__()
-
-        self.setWindowTitle("Qt Video Compressor")
-        self.resize(750, 700)
-        self.setMinimumSize(650, 600)
-        self.setAcceptDrops(True)
-
-        font = self.font()
-        font.setPointSize(11)
-        self.setFont(font)
-
-        self.setObjectName("MainWindow")
-
-        # Add stylesheet for disabled inputs
-        self.setStyleSheet(f"""
-            #MainWindow {{
-                background-color: {'black' if is_dark else 'white'};
-            }}
-            QLineEdit:disabled, QComboBox:disabled, QPushButton:disabled {{
-                border: 1px solid {'#1f1f1f' if is_dark else '#cccccc'};
-                border-radius: 5px;
-            }}
-            QLineEdit:disabled {{
-                padding: 5px;
-            }}
-            QPushButton:disabled {{
-                background-color: {'#2D2D2D' if is_dark else '#e0e0e0'};
-            }}
-                           
-
-            /* Make the specific panel dark */
-            #InputPanel {{
-                background-color: {'#111111' if is_dark else '#f0f0f0'};
-                border-radius: 5px;
-            }}
-
-            /* Force text inside this panel to be white (for the labels) */
-            QWidget#InputPanel QLabel {{
-                color: {"white" if is_dark else "black"};
-            }}
-        """)
-
-        layout = QVBoxLayout()
-        layout.setSpacing(15)
-        layout.setContentsMargins(25, 25, 25, 25)
-
-        # Drag area
-        self.label = QLabel("Drag & Drop Video")
-        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.label.setMinimumHeight(130)
-        self.label.setStyleSheet("""
-            QLabel {
-                border: 2px dashed gray;
-                border-radius: 10px;
-                padding: 25px;
-                font-size: 16px;
-            }
-        """)
-        self.label.mousePressEvent = lambda event: self.browse_for_video()
-        layout.addWidget(self.label)
-
-        # Create tabbed interface (will be populated on demand)
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-        self.tabs.hide()
-
-        # Progress
-        self.progress = QProgressBar()
-        self.progress.setMinimumHeight(35)
-        layout.addWidget(self.progress)
-        self.progress.hide()
-
-        # Compress button
-        self.button = QPushButton("Compress")
-        self.button.setMinimumHeight(50)
-        self.button.clicked.connect(self.start_compression)
-
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.setMinimumHeight(50)
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.stop_compression)
-
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.button)
-        button_layout.addWidget(self.stop_button)
-        layout.addLayout(button_layout)
-        self.button.hide()
-        self.stop_button.hide()
-
-        self.setLayout(layout)
-
-        self.input_file = None
-        self.tabs_initialized = False  # Track if tabs have been created
-        self.worker = None
-        self.is_compressing = False
-        self._closing = False
-
-        # --- new cached state ---
-        self.duration = None                           # cache ffprobe duration (call once)
-        self._source_audio_bitrate_kbps = None         # cache source audio bitrate (kbps)
-        self._last_estimate_key = None                 # avoid redundant estimate work
-
-        # Start FFmpeg check in background (non-blocking)
-        self.ffmpeg_check = FFmpegCheckWorker()
-        self.ffmpeg_check.check_complete.connect(self.on_ffmpeg_check_complete)
-        self.ffmpeg_check.start()
-
-    def initialize_tabs(self):
-        """Create and setup all tabs (called on first video load)"""
-        if self.tabs_initialized:
-            return
-
-        # Tab 1: File Size
-        tab1 = QWidget()
-        tab1.setObjectName("InputPanel")
-        tab1_layout = QVBoxLayout()
-
-        # Size input with label
-        size_layout = QHBoxLayout()
-        self.size_input = QLineEdit()
-        self.size_input.setPlaceholderText("Enter target size")
-        self.size_input.setMinimumHeight(40)
-        size_layout.addWidget(self.size_input)
-        size_unit = QLabel("MB")
-        size_unit.setMinimumWidth(35)
-        size_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        size_layout.addWidget(size_unit, 0, Qt.AlignmentFlag.AlignRight)
-        tab1_layout.addLayout(size_layout)
-
-        # Bitrate display with label
-        bit_layout = QHBoxLayout()
-        self.vid_bit_input = QLineEdit()
-        self.vid_bit_input.setPlaceholderText("Calculated")
-        self.vid_bit_input.setReadOnly(True)
-        self.vid_bit_input.setDisabled(True)
-        self.vid_bit_input.setMinimumHeight(40)
-        bit_layout.addWidget(self.vid_bit_input)
-        bit_unit = QLabel("kbps")
-        bit_unit.setMinimumWidth(35)
-        bit_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        bit_layout.addWidget(bit_unit, 0, Qt.AlignmentFlag.AlignRight)
-        tab1_layout.addLayout(bit_layout)
-
-        self.size_source_button = QPushButton("Match Source")
-        self.size_source_button.setMinimumHeight(45)
-        self.size_source_button.clicked.connect(self.load_source_file_size)
-        tab1_layout.addWidget(self.size_source_button)
-
-        tab1_layout.addStretch()
-        tab1.setLayout(tab1_layout)
-        self.tabs.addTab(tab1, "File Size")
-
-        # Tab 2: Video Settings
-        tab2 = QWidget()
-        tab2.setObjectName("InputPanel")
-        tab2_layout = QVBoxLayout()
-        tab2_layout.setSpacing(10)
-
-        # Resolution with labels
-        resolution_layout = QHBoxLayout()
-        self.width_input = QLineEdit()
-        self.width_input.setPlaceholderText("Width")
-        self.width_input.setMinimumHeight(40)
-        resolution_layout.addWidget(self.width_input)
-        width_unit = QLabel("px")
-        width_unit.setMinimumWidth(25)
-        width_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        resolution_layout.addWidget(width_unit, 0, Qt.AlignmentFlag.AlignRight)
-
-        self.height_input = QLineEdit()
-        self.height_input.setPlaceholderText("Height")
-        self.height_input.setMinimumHeight(40)
-        resolution_layout.addWidget(self.height_input)
-        height_unit = QLabel("px")
-        height_unit.setMinimumWidth(30)
-        height_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        resolution_layout.addWidget(height_unit, 0, Qt.AlignmentFlag.AlignRight)
-        tab2_layout.addLayout(resolution_layout)
-
-        # FPS with label
-        fps_layout = QHBoxLayout()
-        self.fps_input = QLineEdit()
-        self.fps_input.setPlaceholderText("FPS")
-        self.fps_input.setMinimumHeight(40)
-        fps_layout.addWidget(self.fps_input)
-        fps_unit = QLabel("fps")
-        fps_unit.setMinimumWidth(30)
-        fps_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        fps_layout.addWidget(fps_unit, 0, Qt.AlignmentFlag.AlignRight)
-        tab2_layout.addLayout(fps_layout)
-
-        # keep the tiny preview updated when inputs change
-        self.width_input.textChanged.connect(self.update_video_info_label)
-        self.height_input.textChanged.connect(self.update_video_info_label)
-        self.fps_input.textChanged.connect(self.update_video_info_label)
-
-        self.source_button = QPushButton("Use Source Settings")
-        self.source_button.setMinimumHeight(45)
-        self.source_button.clicked.connect(self.load_source_settings)
-        tab2_layout.addWidget(self.source_button)
-
-        # tiny size/fps preview (bottom of Video tab)
-        self.video_info_label = QLabel("")
-        self.video_info_label.setMinimumHeight(14)
-        self.video_info_label.setStyleSheet(
-            f"font-size:10px; color: {'#CCCCCC' if is_dark else '#666666'};"
-        )
-        tab2_layout.addWidget(self.video_info_label)
-
-        tab2_layout.addStretch()
-        tab2.setLayout(tab2_layout)
-        self.tabs.addTab(tab2, "Video")
-
-        # Tab 4: Audio
-        tab4 = QWidget()
-        tab4.setObjectName("InputPanel")
-        tab4_layout = QVBoxLayout()
-        tab4_layout.setSpacing(10)
-
-        self.mute_audio = QCheckBox("Mute Audio")
-        self.mute_audio.setMinimumHeight(40)
-        tab4_layout.addWidget(self.mute_audio)
-
-        # Audio bitrate with label
-        audio_layout = QHBoxLayout()
-        self.audio_bitrate_input = QLineEdit()
-        self.audio_bitrate_input.setPlaceholderText("Enter audio bitrate")
-        self.audio_bitrate_input.setMinimumHeight(40)
-        self.audio_bitrate_input.setText("")
-        audio_layout.addWidget(self.audio_bitrate_input)
-        audio_unit = QLabel("kbps")
-        audio_unit.setMinimumWidth(35)
-        audio_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        audio_layout.addWidget(audio_unit, 0, Qt.AlignmentFlag.AlignRight)
-        tab4_layout.addLayout(audio_layout)
-
-        self.audio_source_button = QPushButton("Match Source")
-        self.audio_source_button.setMinimumHeight(45)
-        self.audio_source_button.clicked.connect(self.load_source_audio_bitrate)
-        tab4_layout.addWidget(self.audio_source_button)
-        tab4_layout.addStretch()
-        tab4.setLayout(tab4_layout)
-        self.tabs.addTab(tab4, "Audio")
-
-        # Tab 5: Fun
-        tab5 = QWidget()
-        tab5.setObjectName("InputPanel")
-        tab5_layout = QVBoxLayout()
-        tab5_layout.setSpacing(10)
-
-        # Speed with label
-        speed_layout = QHBoxLayout()
-        self.speed_input = QLineEdit()
-        self.speed_input.setPlaceholderText("1.0")
-        self.speed_input.setMinimumHeight(40)
-        speed_layout.addWidget(self.speed_input)
-        speed_unit = QLabel("x speed")
-        speed_unit.setMinimumWidth(25)
-        speed_unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        speed_layout.addWidget(speed_unit, 0, Qt.AlignmentFlag.AlignRight)
-        tab5_layout.addLayout(speed_layout)
-
-        tab5_layout.addStretch()
-        tab5.setLayout(tab5_layout)
-        self.tabs.addTab(tab5, "Fun")
-
-        # Tab 3: Encoder
-        tab3 = QWidget()
-        tab3.setObjectName("InputPanel")
-        tab3_layout = QVBoxLayout()
-        tab3_layout.setSpacing(10)
-
-        self.codec_box = QComboBox()
-        self.codec_box.setMinimumHeight(40)
-        self.codec_box.addItems(["H.264 (libx264)", "H.265 (libx265)", "AV1 (libaom-av1)"])
-        self.codec_box.currentIndexChanged.connect(self.update_encoder_options)
-        tab3_layout.addWidget(self.codec_box)
-
-        # Add a label for clarity
-        codec_label = QLabel("Video Codec")
-        tab3_layout.insertWidget(0, codec_label)
-
-        self.preset_box = QComboBox()
-        self.preset_box.setMinimumHeight(40)
-        self.preset_box.addItems(["ultrafast", "fast", "medium", "slow"])
-        tab3_layout.addWidget(self.preset_box)
-
-        self.tune_box = QComboBox()
-        self.tune_box.setMinimumHeight(40)
-        self.tune_box.addItems(["None", "film", "animation", "grain", "stillimage"])
-        tab3_layout.addWidget(self.tune_box)
-
-        tab3_layout.addStretch()
-        tab3.setLayout(tab3_layout)
-        self.tabs.addTab(tab3, "Encoder")
-
-        # Setup signal connections for input fields
-        self.size_input.textChanged.connect(self.update_estimated_bitrate)
-        self.audio_bitrate_input.textChanged.connect(self.update_estimated_bitrate)
-        self.mute_audio.stateChanged.connect(lambda _: self.update_estimated_bitrate())
-
-        self.tabs_initialized = True
-
-    def on_ffmpeg_check_complete(self, is_installed):
-        """Handle FFmpeg check result"""
-        if not is_installed:
-            show_ffmpeg_installation_dialog()
-            sys.exit(1)
-
-    def show_compression_controls(self):
-        """Show tabs, progress bar, and compress button"""
-        self.initialize_tabs()  # Create tabs on first video load
-        self.tabs.show()
-        self.progress.show()
-        self.button.show()
-        self.stop_button.show()
-
-    def browse_for_video(self):
-        """Open file dialog to select a video"""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Video", "", "Video Files (*.mp4 *.avi *.mkv *.mov)")
-        if file_path:
-            self.input_file = file_path
-            self.label.setText(os.path.basename(self.input_file))
-            self.show_compression_controls()
-
-            # get duration once and cache it (avoid repeated ffprobe)
-            self.duration = self.get_duration(self.input_file)
-
-            self.load_source_settings()
-            self.load_source_file_size()
-            self.update_estimated_bitrate()
-
-    # -------------------------
-    # Drag & Drop
-    # -------------------------
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.accept()
-
-    def dropEvent(self, event):
-        self.input_file = event.mimeData().urls()[0].toLocalFile()
-        self.label.setText(os.path.basename(self.input_file))
-        self.show_compression_controls()
-
-        # cache duration once
-        self.duration = self.get_duration(self.input_file)
-
-        self.load_source_settings()
-        self.load_source_file_size()
-        self.update_estimated_bitrate()
-
-    # -------------------------
-    # Load Source Settings
-    # -------------------------
-    def load_source_settings(self):
-        if not self.input_file:
-            QMessageBox.warning(self, "Error", "Load a video first.")
-            return
-
-        command = [
-            "ffprobe",
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,r_frame_rate",
-            "-of", "default=noprint_wrappers=1",
-            self.input_file
-        ]
-
-        result = subprocess.run(command, stdout=subprocess.PIPE, text=True, creationflags=SUBPROCESS_FLAGS, timeout=10)
-        output = result.stdout
-
-        width = re.search(r"width=(\d+)", output)
-        height = re.search(r"height=(\d+)", output)
-        fps = re.search(r"r_frame_rate=(\d+)/(\d+)", output)
-
-        if width and height:
-            self.width_input.setText(width.group(1))
-            self.height_input.setText(height.group(1))
-
-        if fps:
-            numerator = int(fps.group(1))
-            denominator = int(fps.group(2))
-            real_fps = round(numerator / denominator, 2)
-            self.fps_input.setText(str(real_fps))
-
-        self.load_source_audio_bitrate()
-
-    def load_source_audio_bitrate(self):
-        """Load audio bitrate from source video"""
-        if not self.input_file:
-            QMessageBox.warning(self, "Error", "Load a video first.")
-            return
-
-        bitrate = self.get_source_audio_bitrate(self.input_file)
-        self._source_audio_bitrate_kbps = bitrate           # cache it (kbps)
-        self.audio_bitrate_input.setText(str(bitrate))
-        self.update_estimated_bitrate()
-
-    def load_source_file_size(self):
-        """Load file size from source video"""
-        if not self.input_file:
-            QMessageBox.warning(self, "Error", "Load a video first.")
-            return
-
-        file_size_mb = self.get_source_file_size(self.input_file)
-        if file_size_mb is not None:
-            self.size_input.setText(f"{file_size_mb:.2f}")
-            self.update_estimated_bitrate()
+    def _entry_row(title: str, unit: str) -> Adw.EntryRow:
+        row = Adw.EntryRow.new()
+        row.set_title(title)
+        row.set_input_purpose(Gtk.InputPurpose.FREE_FORM)
+        row.add_css_class("numeric")
+        unit_label = Gtk.Label.new(unit)
+        unit_label.add_css_class("dim-label")
+        row.add_suffix(unit_label)
+        return row
+
+    @staticmethod
+    def _combo_row(title: str, labels: list[str]) -> Adw.ComboRow:
+        row = Adw.ComboRow.new()
+        row.set_title(title)
+        row.set_model(Gtk.StringList.new(labels))
+        return row
+
+    def _set_combo_options(
+        self, row: Adw.ComboRow, options: list[tuple[str, object]], selected: int
+    ) -> None:
+        row.set_model(Gtk.StringList.new([label for label, _ in options]))
+        row.set_selected(min(selected, len(options) - 1))
+
+    def _configure_encoder_rows(self, *_args: object) -> None:
+        codec = self._selected_value(self.codec_row, CODEC_OPTIONS)
+        if codec == "libaom-av1":
+            self._preset_options = AV1_PRESETS
+            preset_index = 4
+            self._tune_options = [("None", None)]
+            self.tune_row.set_sensitive(False)
         else:
-            QMessageBox.warning(self, "Error", "Could not read file size.")
+            self._preset_options = H26X_PRESETS
+            preset_index = 2
+            self._tune_options = TUNE_OPTIONS
+            self.tune_row.set_sensitive(True)
+        self._set_combo_options(self.preset_row, self._preset_options, preset_index)
+        self._set_combo_options(self.tune_row, self._tune_options, 0)
 
-    # -------------------------
-    # Compression Start
-    # -------------------------
-    def start_compression(self):
-        # The disabled button handles normal clicks; this guard also prevents
-        # queued or programmatic calls from launching a second FFmpeg process.
-        if self.is_compressing:
-            return
+    @staticmethod
+    def _selected_value(row: Adw.ComboRow, options: list[tuple[str, object]]) -> object:
+        selected = row.get_selected()
+        if selected >= len(options):
+            return options[0][1]
+        return options[selected][1]
 
-        if not self.input_file:
-            QMessageBox.warning(self, "Error", "No video selected.")      
-            return
+    def _check_requirements(self) -> None:
+        def work() -> None:
+            available = check_ffmpeg_installed()
+            GLib.idle_add(self._requirements_checked, available)
 
-        try:
-            target_mb = safe_eval_expression(self.size_input.text())
-            if target_mb is None:
-                raise ValueError("Invalid target size")
-            
-            width = ensure_even(safe_eval_expression(self.width_input.text()))
-            if width is None:
-                raise ValueError("Invalid width")
-            
-            height = ensure_even(safe_eval_expression(self.height_input.text()))
-            if height is None:
-                raise ValueError("Invalid height")
-            
-            fps = safe_eval_expression(self.fps_input.text())
-            if fps is None:
-                raise ValueError("Invalid FPS")
-            
-            audio_bitrate_expr = safe_eval_expression(self.audio_bitrate_input.text()) if not self.mute_audio.isChecked() else 0
-            if self.audio_bitrate_input.text().strip() and audio_bitrate_expr is None and not self.mute_audio.isChecked():
-                raise ValueError("Invalid audio bitrate")
-            audio_bitrate = int(audio_bitrate_expr * 1000) if audio_bitrate_expr else 0
+        threading.Thread(target=work, name="ffmpeg-check", daemon=True).start()
 
-            codec_text = self.codec_box.currentText()
-            if "H.264" in codec_text:
-                codec = "libx264"
-            elif "H.265" in codec_text:
-                codec = "libx265"
-            elif "AV1" in codec_text:
-                codec = "libaom-av1"
-            else:
-                codec = "libx264"
-
-            # Get tune value
-            tune = self.tune_box.currentText()
-            if tune == "None":
-                tune = None
-
-            # Get speed value
-            speed_text = self.speed_input.text().strip()
-            if speed_text:
-                speed = safe_eval_expression(speed_text)
-                if speed is None or speed <= 0:
-                    raise ValueError("Invalid speed value")
-            else:
-                speed = 1.0
-        except:
-            QMessageBox.warning(self, "Error", "Invalid numeric input.")
-            return
-
-        # use cached duration if available; call ffprobe only if we must
-        duration = self.duration if self.duration is not None else self.get_duration(self.input_file)
-        self.duration = duration
-
-        # Calculate video bitrate
-        target_bits = target_mb * 1024 * 1024 * 8
-        video_bitrate = (target_bits / duration) - audio_bitrate
-        video_bitrate *= 0.97  # safety margin
-
-        if video_bitrate < 1:
-            QMessageBox.warning(self, "Error", "Target size too small.")
-            return
-
-        suggested_name = os.path.splitext(os.path.basename(self.input_file))[0] + "_c.mp4"
-        output = QFileDialog.getSaveFileName(self, "Save File", suggested_name, "MP4 Files (*.mp4)")[0]
-        if not output:
-            return
-
-        resolution = f"{width}:{height}"
-        self.worker = FFmpegWorker(
-            self.input_file,
-            output,
-            int(video_bitrate),
-            resolution,
-            fps,
-            self.preset_box.currentText(),
-            duration,
-            audio_bitrate,
-            self.mute_audio.isChecked(),
-            tune,
-            speed,
-            codec  # Add this parameter
-        )
-
-        self.worker.progress_signal.connect(self.progress.setValue)
-        self.worker.finished.connect(self.on_compression_finished)
-
-        self.progress.setValue(0)
-        self.set_compression_running(True)
-        self.worker.start()
-
-    def set_compression_running(self, is_running):
-        """Keep all conversion-related controls in a consistent state."""
-        self.is_compressing = is_running
-        self.button.setEnabled(not is_running)
-        self.stop_button.setEnabled(is_running)
-        self.stop_button.setText("Stop")
-        self.tabs.setEnabled(not is_running)
-        self.label.setEnabled(not is_running)
-        self.setAcceptDrops(not is_running)
-
-    def stop_compression(self):
-        """Stop the active conversion without blocking the GUI."""
-        if not self.is_compressing or self.worker is None:
-            return
-
-        self.stop_button.setEnabled(False)
-        self.stop_button.setText("Stopping...")
-        self.worker.stop()
-        QTimer.singleShot(3000, self.force_stop_if_needed)
-
-    def force_stop_if_needed(self):
-        """Escalate cancellation if FFmpeg ignored graceful termination."""
-        if self.worker is not None and self.worker.isRunning() and self.is_compressing:
-            self.worker.force_stop()
-
-    def on_compression_finished(self):
-        """Restore the GUI and report how the conversion ended."""
-        worker = self.worker
-        if worker is None:
-            return
-
-        status = worker.result_status
-        message = worker.result_message
-        worker.deleteLater()
-        self.worker = None
-        self.set_compression_running(False)
-
-        if self._closing:
-            return
-
-        if status == "success":
-            QMessageBox.information(self, "Done", "Compression Finished")
-        elif status == "stopped":
-            QMessageBox.information(self, "Stopped", "Compression Stopped")
+    def _requirements_checked(self, available: bool) -> bool:
+        self.status_spinner.stop()
+        self._ffmpeg_state = "ready" if available else "missing"
+        if available:
+            self.open_header_button.set_sensitive(True)
+            self.status_page.set_icon_name("video-x-generic-symbolic")
+            self.status_page.set_title("Choose a Video")
+            self.status_page.set_description("Select a video to compress, or drop one here.")
+            self.status_page.set_child(self.open_status_button)
+            if self._pending_file:
+                path, self._pending_file = self._pending_file, None
+                self.load_file(path)
         else:
-            QMessageBox.warning(
-                self,
-                "Compression Failed",
-                message or "FFmpeg could not complete the conversion."
+            self.status_page.set_icon_name("dialog-error-symbolic")
+            self.status_page.set_title("FFmpeg Is Required")
+            self.status_page.set_description(
+                "Install FFmpeg and FFprobe, then reopen the application.\n\n"
+                "On Ubuntu: sudo apt install ffmpeg"
             )
+            self.status_page.set_child(None)
+        return GLib.SOURCE_REMOVE
 
-    def closeEvent(self, event):
-        """Ensure FFmpeg cannot continue after the application is closed."""
-        self._closing = True
-
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.stop()
-            if not self.worker.wait(3000):
-                self.worker.force_stop()
-                self.worker.wait()
-
-        event.accept()
-
-    # --- NEW: update the Estimated Bitrate field while typing (uses cached duration/audio) ---
-    def update_estimated_bitrate(self, _=None):
-        """Compute final video bitrate (kbps) using cached duration + current audio settings.
-        Does not call ffprobe repeatedly; uses cached values and skips if inputs didn't change."""
-        size_text = self.size_input.text().strip()
-        audio_text = self.audio_bitrate_input.text().strip()
-        muted = self.mute_audio.isChecked()
-
-        key = (size_text, audio_text, muted, self.duration)
-        if key == self._last_estimate_key:
+    def open_file_dialog(self) -> None:
+        if self._ffmpeg_state != "ready" or self._runner is not None:
             return
-        self._last_estimate_key = key
+        dialog = Gtk.FileDialog.new()
+        dialog.set_title("Open Video")
+        video_filter, filters = self._video_filters()
+        dialog.set_filters(filters)
+        dialog.set_default_filter(video_filter)
+        dialog.open(self, None, self._open_file_finished)
 
-        # parse size
-        target_mb = safe_eval_expression(size_text)
-        if target_mb is None:
-            self.vid_bit_input.setText("")
+    @staticmethod
+    def _video_filters() -> tuple[Gtk.FileFilter, Gio.ListStore]:
+        video_filter = Gtk.FileFilter.new()
+        video_filter.set_name("Video Files")
+        video_filter.add_mime_type("video/*")
+        for pattern in ("*.mp4", "*.avi", "*.mkv", "*.mov", "*.webm", "*.m4v"):
+            video_filter.add_pattern(pattern)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(video_filter)
+        return video_filter, filters
+
+    def _open_file_finished(self, dialog: Gtk.FileDialog, result: Gio.AsyncResult) -> None:
+        try:
+            selected = dialog.open_finish(result)
+        except GLib.Error as error:
+            if not self._dialog_was_cancelled(error):
+                self._show_toast(f"Could not open the file: {error.message}")
             return
-
-        # ensure we have duration (call once if still missing)
-        if self.duration is None and self.input_file:
-            self.duration = self.get_duration(self.input_file)
-
-        if not self.duration or self.duration <= 0:
-            self.vid_bit_input.setText("")
-            return
-
-        # determine audio bitrate (bps)
-        if muted:
-            audio_bps = 0
+        path = selected.get_path()
+        if path:
+            self.load_file(path)
         else:
-            audio_val = safe_eval_expression(audio_text)
-            if audio_val is not None:
-                audio_bps = int(audio_val * 1000)
-            elif self._source_audio_bitrate_kbps:
-                audio_bps = self._source_audio_bitrate_kbps * 1000
-            else:
-                audio_bps = AUDIO_BITRATE
+            self._show_toast("Choose a local video file.")
 
-        # compute video bitrate (bps) same formula used in start_compression
-        target_bits = target_mb * 1024 * 1024 * 8
-        video_bps = (target_bits / self.duration) - audio_bps
-        video_bps *= 0.97  # safety margin
+    @staticmethod
+    def _dialog_was_cancelled(error: GLib.Error) -> bool:
+        return error.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED) or error.matches(
+            Gtk.dialog_error_quark(), Gtk.DialogError.CANCELLED
+        ) or error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED)
 
-        if video_bps <= 0:
-            self.vid_bit_input.setText("0")
+    def _on_drop(
+        self, _target: Gtk.DropTarget, file_list: Gdk.FileList, _x: float, _y: float
+    ) -> bool:
+        if self._ffmpeg_state != "ready" or self._runner is not None:
+            return False
+        files = file_list.get_files()
+        if len(files) != 1:
+            self._show_toast("Drop one video at a time.")
+            return True
+        path = files[0].get_path()
+        if not path:
+            self._show_toast("Choose a local video file.")
+            return True
+        self.load_file(path)
+        return True
+
+    def load_file(self, path: str) -> None:
+        if self._ffmpeg_state == "checking":
+            self._pending_file = path
+            return
+        if self._ffmpeg_state != "ready" or self._runner is not None:
             return
 
-        # show kbps in the Estimated Bitrate field
-        video_kbps = int(video_bps / 1000)
-        self.vid_bit_input.setText(str(video_kbps))
+        self._probe_generation += 1
+        generation = self._probe_generation
+        self.open_header_button.set_sensitive(False)
+        self.status_page.set_icon_name("video-x-generic-symbolic")
+        self.status_page.set_title("Reading Video")
+        self.status_page.set_description(Path(path).name)
+        self.status_spinner.start()
+        self.status_page.set_child(self.status_spinner)
+        self.page_stack.set_visible_child_name("status")
+        self.bottom_bar.set_visible(False)
+        self.progress_bar.set_visible(False)
 
-
-        # new: update the tiny "WxH @ FPS" label
-        self.update_video_info_label()
-
-    def update_video_info_label(self, _=None):
-        """Update the tiny video size + FPS preview label."""
-        w = safe_eval_expression(self.width_input.text().strip())
-        h = safe_eval_expression(self.height_input.text().strip())
-        fps = safe_eval_expression(self.fps_input.text().strip())
-
-        # Apply ensure_even to dimensions
-        w = ensure_even(w)
-        h = ensure_even(h)
-
-        parts = []
-        if w is not None and h is not None:
+        def work() -> None:
             try:
-                parts.append(f"{int(w)}x{int(h)}")
-            except:
-                parts.append(f"{w}x{h}")
+                info = probe_source(path)
+                error: Exception | None = None
+            except Exception as caught:  # converted into a user-facing error on the main thread
+                info = None
+                error = caught
+            GLib.idle_add(self._probe_finished, generation, info, error)
 
-        if fps is not None:
-            if isinstance(fps, float) and fps.is_integer():
-                fps_str = str(int(fps))
-            else:
-                fps_str = ("{:.2f}".format(fps)).rstrip('0').rstrip('.')
-            parts.append(f"@ {fps_str}")
+        threading.Thread(target=work, name="video-probe", daemon=True).start()
 
-        self.video_info_label.setText(" ".join(parts))
+    def _probe_finished(
+        self, generation: int, info: SourceInfo | None, error: Exception | None
+    ) -> bool:
+        if generation != self._probe_generation:
+            return GLib.SOURCE_REMOVE
+        self.status_spinner.stop()
+        self.open_header_button.set_sensitive(True)
+        if error is not None or info is None:
+            self.status_page.set_icon_name("dialog-error-symbolic")
+            self.status_page.set_title("Could Not Open Video")
+            self.status_page.set_description(str(error) or "The file could not be read.")
+            self.status_page.set_child(self.open_status_button)
+            self.page_stack.set_visible_child_name("status")
+            return GLib.SOURCE_REMOVE
 
-    def update_encoder_options(self):
-        """Update preset and tune options based on selected codec"""
-        codec_text = self.codec_box.currentText()
-        
-        self.preset_box.clear()
-        self.tune_box.clear()
-        
-        if "H.264" in codec_text:
-            self.preset_box.addItems(["ultrafast", "fast", "medium", "slow"])
-            self.tune_box.addItems(["None", "film", "animation", "grain", "stillimage"])
-        elif "H.265" in codec_text:
-            self.preset_box.addItems(["ultrafast", "fast", "medium", "slow"])
-            self.tune_box.addItems(["None", "film", "animation", "grain", "stillimage"])
-        elif "AV1" in codec_text:
-            self.preset_box.addItems(["0", "1", "2", "3", "4", "5", "6"])  # 0=best quality, 6=fastest
-            self.tune_box.addItems(["None"])  # AV1 doesn't have tune options
-            self.tune_box.setEnabled(False)
+        self.source = info
+        self._populate_source(info)
+        self.page_stack.set_visible_child_name("editor")
+        self.bottom_bar.set_visible(True)
+        return GLib.SOURCE_REMOVE
 
-is_dark = False
+    def _populate_source(self, info: SourceInfo) -> None:
+        self._updating_form = True
+        try:
+            self.window_title.set_subtitle(Path(info.path).name)
+            self.source_row.set_title(Path(info.path).name)
+            self.source_row.set_subtitle(
+                f"{info.width} × {info.height}  •  {format_decimal(info.fps)} fps  •  "
+                f"{format_duration(info.duration)}  •  {info.size_mb:.2f} MB"
+            )
+            self.target_size_row.set_text(f"{info.size_mb:.2f}")
+            self.width_row.set_text(str(info.width))
+            self.height_row.set_text(str(info.height))
+            self.fps_row.set_text(format_decimal(info.fps))
+            self.include_audio_row.set_active(info.has_audio)
+            self.include_audio_row.set_sensitive(info.has_audio)
+            self.include_audio_row.set_subtitle(
+                "Include audio in the compressed video"
+                if info.has_audio
+                else "The source video does not contain audio"
+            )
+            audio_bitrate = info.audio_bitrate_kbps or DEFAULT_AUDIO_BITRATE_KBPS
+            self.audio_bitrate_row.set_text(str(audio_bitrate))
+            self.audio_bitrate_row.set_sensitive(info.has_audio)
+            self.speed_row.set_text("1")
+        finally:
+            self._updating_form = False
+        self._update_form()
+
+    def _use_source_size(self, _button: Gtk.Button) -> None:
+        if self.source:
+            self.target_size_row.set_text(f"{self.source.size_mb:.2f}")
+
+    def _use_source_video_settings(self, _button: Gtk.Button) -> None:
+        if self.source:
+            self.width_row.set_text(str(self.source.width))
+            self.height_row.set_text(str(self.source.height))
+            self.fps_row.set_text(format_decimal(self.source.fps))
+
+    def _use_source_audio_bitrate(self, _button: Gtk.Button) -> None:
+        if self.source and self.source.has_audio:
+            self.include_audio_row.set_active(True)
+            self.audio_bitrate_row.set_text(str(self.source.audio_bitrate_kbps))
+
+    def _on_form_changed(self, _row: Adw.EntryRow) -> None:
+        if not self._updating_form:
+            self._update_form()
+
+    def _on_audio_changed(self, _row: Adw.SwitchRow, _property: object) -> None:
+        self.audio_bitrate_row.set_sensitive(self.include_audio_row.get_active())
+        if not self._updating_form:
+            self._update_form()
+
+    def _on_codec_changed(self, _row: Adw.ComboRow, _property: object) -> None:
+        self._configure_encoder_rows()
+        if not self._updating_form:
+            self._update_form()
+
+    @staticmethod
+    def _set_field_state(row: Adw.EntryRow, valid: bool, message: str = "") -> None:
+        if valid:
+            row.remove_css_class("error")
+            row.set_tooltip_text(None)
+            row.update_property([Gtk.AccessibleProperty.DESCRIPTION], [""])
+        else:
+            row.add_css_class("error")
+            row.set_tooltip_text(message)
+            row.update_property([Gtk.AccessibleProperty.DESCRIPTION], [message])
+
+    def _number(
+        self,
+        row: Adw.EntryRow,
+        *,
+        minimum: float,
+        maximum: float,
+        label: str,
+        even: bool = False,
+    ) -> float | int | None:
+        value = evaluate_expression(row.get_text())
+        if value is None or value < minimum or value > maximum:
+            self._set_field_state(
+                row, False, f"{label} must be between {minimum:g} and {maximum:g}."
+            )
+            return None
+        if even:
+            adjusted = ensure_even(value)
+            if adjusted is None or adjusted < minimum:
+                self._set_field_state(row, False, f"{label} must be a positive even number.")
+                return None
+            value = adjusted
+        self._set_field_state(row, True)
+        return value
+
+    def _read_form(self) -> dict[str, object] | None:
+        target_mb = self._number(
+            self.target_size_row, minimum=0.01, maximum=1_000_000, label="Target size"
+        )
+        width = self._number(
+            self.width_row, minimum=2, maximum=16384, label="Width", even=True
+        )
+        height = self._number(
+            self.height_row, minimum=2, maximum=16384, label="Height", even=True
+        )
+        fps = self._number(self.fps_row, minimum=0.01, maximum=1000, label="Frame rate")
+        speed = self._number(
+            self.speed_row, minimum=0.01, maximum=10000, label="Playback speed"
+        )
+        include_audio = self.include_audio_row.get_active()
+        if include_audio:
+            audio_bitrate = self._number(
+                self.audio_bitrate_row,
+                minimum=1,
+                maximum=10000,
+                label="Audio bitrate",
+            )
+        else:
+            audio_bitrate = 0.0
+            self._set_field_state(self.audio_bitrate_row, True)
+
+        values = (target_mb, width, height, fps, speed, audio_bitrate)
+        if any(value is None for value in values):
+            return None
+        return {
+            "target_mb": float(target_mb),
+            "width": int(width),
+            "height": int(height),
+            "fps": float(fps),
+            "speed": float(speed),
+            "audio_bitrate_kbps": float(audio_bitrate),
+            "mute_audio": not include_audio,
+            "codec": self._selected_value(self.codec_row, CODEC_OPTIONS),
+            "preset": self._selected_value(self.preset_row, self._preset_options),
+            "tune": self._selected_value(self.tune_row, self._tune_options),
+        }
+
+    def _update_form(self) -> None:
+        values = self._read_form()
+        self._form_valid = values is not None and self.source is not None
+        if not self._form_valid or values is None or self.source is None:
+            self.estimated_bitrate_row.set_subtitle("—")
+            self.video_preview_row.set_subtitle("—")
+            self.compress_button.set_sensitive(False)
+            return
+
+        width = int(values["width"])
+        height = int(values["height"])
+        fps = float(values["fps"])
+        self.video_preview_row.set_subtitle(
+            f"{width} × {height}  •  {format_decimal(fps)} fps"
+        )
+        try:
+            video_bps = calculate_video_bitrate(
+                float(values["target_mb"]),
+                self.source.duration,
+                float(values["speed"]),
+                round(float(values["audio_bitrate_kbps"]) * 1000),
+                bool(values["mute_audio"]),
+            )
+        except ValidationError as error:
+            self._set_field_state(self.target_size_row, False, str(error))
+            self.estimated_bitrate_row.set_subtitle(str(error))
+            self._form_valid = False
+        else:
+            self.estimated_bitrate_row.set_subtitle(f"{video_bps / 1000:,.0f} kbps  •  approximate")
+        self.compress_button.set_sensitive(self._form_valid and self._runner is None)
+
+    def _choose_output(self, _button: Gtk.Button) -> None:
+        if not self._form_valid or self.source is None or self._runner is not None:
+            return
+        dialog = Gtk.FileDialog.new()
+        dialog.set_title("Save Compressed Video")
+        dialog.set_initial_name(f"{Path(self.source.path).stem}_compressed.mp4")
+        mp4_filter = Gtk.FileFilter.new()
+        mp4_filter.set_name("MP4 Video")
+        mp4_filter.add_mime_type("video/mp4")
+        mp4_filter.add_pattern("*.mp4")
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+        filters.append(mp4_filter)
+        dialog.set_filters(filters)
+        dialog.set_default_filter(mp4_filter)
+        dialog.save(self, None, self._save_file_finished)
+
+    def _save_file_finished(self, dialog: Gtk.FileDialog, result: Gio.AsyncResult) -> None:
+        try:
+            selected = dialog.save_finish(result)
+        except GLib.Error as error:
+            if not self._dialog_was_cancelled(error):
+                self._show_toast(f"Could not choose the output file: {error.message}")
+            return
+        output_path = selected.get_path()
+        if not output_path:
+            self._show_toast("Choose a local output folder.")
+            return
+        if Path(output_path).suffix.lower() != ".mp4":
+            output_path = str(Path(output_path).with_suffix(".mp4"))
+        self._start_compression(output_path)
+
+    def _start_compression(self, output_path: str) -> None:
+        if self.source is None or self._runner is not None:
+            return
+        values = self._read_form()
+        if values is None:
+            self._update_form()
+            return
+        try:
+            job = make_job(source=self.source, output_file=output_path, **values)
+        except ValidationError as error:
+            self._show_error("Check Compression Settings", str(error))
+            return
+
+        runner = FFmpegRunner()
+        self._runner = runner
+        self._set_running(True)
+
+        def progress(percent: int) -> None:
+            GLib.idle_add(self._set_progress, runner, percent)
+
+        def work() -> None:
+            result = runner.run(job, progress)
+            GLib.idle_add(self._compression_finished, runner, result.status, result.message)
+
+        self._worker_thread = threading.Thread(
+            target=work, name="ffmpeg-compression", daemon=True
+        )
+        self._worker_thread.start()
+
+    def _set_running(self, running: bool) -> None:
+        self.settings_box.set_sensitive(not running)
+        self.open_header_button.set_sensitive(not running)
+        self.compress_button.set_visible(not running)
+        self.compress_button.set_sensitive(not running and self._form_valid)
+        self.cancel_button.set_visible(running)
+        self.cancel_button.set_sensitive(running)
+        self.cancel_button.set_label("Cancel Compression")
+        self.progress_bar.set_visible(running)
+        if running:
+            self.progress_bar.set_fraction(0)
+            self.progress_bar.set_text("0%")
+
+    def _set_progress(self, runner: FFmpegRunner, percent: int) -> bool:
+        if self._runner is runner:
+            self.progress_bar.set_fraction(percent / 100)
+            self.progress_bar.set_text(f"{percent}%")
+        return GLib.SOURCE_REMOVE
+
+    def _cancel_compression(self, _button: Gtk.Button | None = None) -> None:
+        runner = self._runner
+        if runner is None:
+            return
+        self.cancel_button.set_sensitive(False)
+        self.cancel_button.set_label("Cancelling…")
+        runner.stop()
+        GLib.timeout_add_seconds(3, self._force_stop_if_current, runner)
+
+    def _force_stop_if_current(self, runner: FFmpegRunner) -> bool:
+        if self._runner is runner and runner.is_running:
+            runner.force_stop()
+        return GLib.SOURCE_REMOVE
+
+    def _compression_finished(
+        self, runner: FFmpegRunner, status: str, message: str
+    ) -> bool:
+        if self._runner is not runner:
+            return GLib.SOURCE_REMOVE
+        self._runner = None
+        self._worker_thread = None
+        self._set_running(False)
+        self.progress_bar.set_visible(status == "success")
+        if status == "success":
+            self.progress_bar.set_fraction(1)
+            self.progress_bar.set_text("Complete")
+            self._show_toast("Compression complete")
+        elif status == "stopped":
+            self.progress_bar.set_visible(False)
+            if not self._close_when_finished:
+                self._show_toast("Compression cancelled")
+        else:
+            self.progress_bar.set_visible(False)
+            self._show_error("Compression Failed", message or "FFmpeg could not compress the video.")
+
+        if self._close_when_finished:
+            self._close_when_finished = False
+            self.destroy()
+        return GLib.SOURCE_REMOVE
+
+    def _show_toast(self, message: str) -> None:
+        self.toast_overlay.add_toast(Adw.Toast.new(message))
+
+    def _show_error(self, heading: str, body: str) -> None:
+        dialog = Adw.AlertDialog.new(heading, body)
+        dialog.add_response("close", "Close")
+        dialog.set_close_response("close")
+        dialog.set_default_response("close")
+        dialog.present(self)
+
+    def _on_close_request(self, _window: Adw.ApplicationWindow) -> bool:
+        if self._runner is None:
+            return False
+        if self._close_dialog is not None:
+            return True
+
+        dialog = Adw.AlertDialog.new(
+            "Stop Compression?",
+            "Closing the application will stop the current compression.",
+        )
+        dialog.add_response("continue", "Continue Compressing")
+        dialog.add_response("stop", "Stop and Close")
+        dialog.set_close_response("continue")
+        dialog.set_default_response("continue")
+        dialog.set_response_appearance("stop", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.connect("response", self._close_response)
+        self._close_dialog = dialog
+        dialog.present(self)
+        return True
+
+    def _close_response(self, _dialog: Adw.AlertDialog, response: str) -> None:
+        self._close_dialog = None
+        if response == "stop":
+            self._close_when_finished = True
+            self._cancel_compression()
+
+
+class VideoCompressorApplication(Adw.Application):
+    def __init__(self) -> None:
+        super().__init__(
+            application_id=APPLICATION_ID,
+            flags=Gio.ApplicationFlags.HANDLES_OPEN,
+        )
+
+    def do_startup(self) -> None:
+        Adw.Application.do_startup(self)
+        self._add_action("open", self._open_action, ["<Control>o"])
+        self._add_action("about", self._about_action)
+        self._add_action("quit", self._quit_action, ["<Control>q"])
+        self.set_accels_for_action("window.close", ["<Control>w"])
+
+    def _add_action(
+        self,
+        name: str,
+        callback: object,
+        shortcuts: list[str] | None = None,
+    ) -> None:
+        action = Gio.SimpleAction.new(name, None)
+        action.connect("activate", callback)
+        self.add_action(action)
+        if shortcuts:
+            self.set_accels_for_action(f"app.{name}", shortcuts)
+
+    def do_activate(self) -> None:
+        window = self.props.active_window
+        if window is None:
+            window = VideoCompressorWindow(self)
+        window.present()
+
+    def do_open(self, files: list[Gio.File], _n_files: int, _hint: str) -> None:
+        self.activate()
+        window = self.props.active_window
+        if isinstance(window, VideoCompressorWindow) and files:
+            path = files[0].get_path()
+            if path:
+                window.load_file(path)
+
+    def _open_action(self, _action: Gio.SimpleAction, _parameter: object) -> None:
+        self.activate()
+        window = self.props.active_window
+        if isinstance(window, VideoCompressorWindow):
+            window.open_file_dialog()
+
+    def _about_action(self, _action: Gio.SimpleAction, _parameter: object) -> None:
+        self.activate()
+        window = self.props.active_window
+        dialog = Adw.AboutDialog.new()
+        dialog.set_application_name(APPLICATION_NAME)
+        dialog.set_application_icon(APPLICATION_ID)
+        dialog.set_version(VERSION)
+        dialog.set_developer_name("Joe")
+        dialog.set_developers(["Joe"])
+        dialog.set_license_type(Gtk.License.GPL_3_0)
+        dialog.set_website("https://github.com/Joedotmt/Qt-Video-Compressor")
+        dialog.set_issue_url("https://github.com/Joedotmt/Qt-Video-Compressor/issues")
+        dialog.set_comments("Compress videos to a chosen target size.")
+        dialog.present(window)
+
+    def _quit_action(self, _action: Gio.SimpleAction, _parameter: object) -> None:
+        window = self.props.active_window
+        if window is not None:
+            window.close()
+        else:
+            self.quit()
+
+
+def main(argv: list[str] | None = None) -> int:
+    application = VideoCompressorApplication()
+    return application.run(argv if argv is not None else sys.argv)
+
+
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-    
-    # Detect dark mode before creating window
-    is_dark = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
-    
-    window = VideoCompressor()
-
-    window.show()
-
-    sys.exit(app.exec())
+    raise SystemExit(main())

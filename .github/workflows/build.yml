@@ -1,94 +1,69 @@
-name: Build desktop apps
+name: Build Video Compressor
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  PYTHON_VERSION: "3.12"
-
 jobs:
-  windows:
-    name: Windows executable
-    runs-on: windows-latest
-
+  checks:
+    name: Tests and metadata
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-build.txt
+      - name: Install GTK runtime and validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            appstream \
+            desktop-file-utils \
+            ffmpeg \
+            gir1.2-adw-1 \
+            gir1.2-gtk-4.0 \
+            python3-gi \
+            xvfb
 
-      - name: Install build dependencies
-        run: python -m pip install --requirement requirements-build.txt
+      - name: Run unit tests
+        run: python3 -m unittest discover -v
 
-      - name: Build executable
-        run: python -m PyInstaller --noconfirm --clean "Qt Video Compressor.spec"
+      - name: Validate Python and GTK startup
+        run: |
+          python3 -m py_compile main.py compressor.py
+          dbus-run-session -- xvfb-run -a python3 -m tests.smoke_startup
 
-      - name: Upload Windows executable
-        uses: actions/upload-artifact@v7
-        with:
-          name: Qt-Video-Compressor-Windows
-          path: dist/Qt Video Compressor.exe
-          if-no-files-found: error
+      - name: Run GTK compression smoke test
+        run: dbus-run-session -- xvfb-run -a python3 -m tests.smoke_compression
 
-  linux:
-    name: Linux AppImage
-    runs-on: ubuntu-22.04
+      - name: Validate desktop metadata
+        run: |
+          desktop-file-validate data/io.github.Joedotmt.VideoCompressor.desktop
+          appstreamcli validate --no-net data/io.github.Joedotmt.VideoCompressor.metainfo.xml
 
+      - name: Check advertised FFmpeg encoders
+        run: |
+          ffmpeg -hide_banner -encoders 2>&1 | grep --quiet libx264
+          ffmpeg -hide_banner -encoders 2>&1 | grep --quiet libx265
+          ffmpeg -hide_banner -encoders 2>&1 | grep --quiet libaom-av1
+
+  flatpak:
+    name: Flatpak
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-build.txt
-
-      - name: Install build dependencies
-        run: python -m pip install --requirement requirements-build.txt
-
-      - name: Build Linux executable
-        run: python -m PyInstaller --noconfirm --clean "Qt Video Compressor.spec"
-
-      - name: Assemble AppDir
-        shell: bash
-        run: |
-          mkdir -p AppDir/usr/bin
-          install -m 755 "dist/Qt Video Compressor" "AppDir/usr/bin/Qt Video Compressor"
-          install -m 644 packaging/linux/qt-video-compressor.desktop AppDir/qt-video-compressor.desktop
-          install -m 644 logo-dark.png AppDir/qt-video-compressor.png
-          ln -s "usr/bin/Qt Video Compressor" AppDir/AppRun
-          ln -s qt-video-compressor.png AppDir/.DirIcon
-
-      - name: Build AppImage
-        shell: bash
-        run: |
-          curl --fail --location --retry 3 \
-            --output appimagetool-x86_64.AppImage \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool-x86_64.AppImage
-          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
-            ./appimagetool-x86_64.AppImage \
-            AppDir "dist/Qt Video Compressor.AppImage"
-          test -x "dist/Qt Video Compressor.AppImage"
-
-      - name: Upload Linux AppImage
-        uses: actions/upload-artifact@v7
-        with:
-          name: Qt-Video-Compressor-Linux
-          path: dist/Qt Video Compressor.AppImage
-          if-no-files-found: error
+          bundle: VideoCompressor.flatpak
+          manifest-path: io.github.Joedotmt.VideoCompressor.yml
+          artifact-name: VideoCompressor-${{ runner.arch }}.flatpak
+          cache-key: flatpak-builder-${{ github.sha }}
